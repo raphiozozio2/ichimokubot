@@ -1,0 +1,17 @@
+{
+  "name": "ichimokbot",
+  "version": "1.0.0",
+  "description": "bot based on ichimoku method",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "keywords": [],
+  "author": "Braga Raphael",
+  "license": "ISC",
+  "dependencies": {
+    "ccxt": "^4.4.82",
+    "dotenv": "^16.5.0",
+    "technicalindicators": "^3.1.0"
+  }
+}
