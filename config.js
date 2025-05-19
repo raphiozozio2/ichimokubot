@@ -10,7 +10,7 @@ module.exports = {
     'RNDR/USDT', 'ARB/USDT', 'SUI/USDT'
   ],
   timeframes: ['15m', '1h', '4h'], // Timeframes plus longs
-  simulationDuration: 20,
+  simulationDuration: 1000000,
   riskPercentage: 5, // Risque réduit à 5%
   
   ichimoku: {
