@@ -19,7 +19,7 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
     });
 
-    this.entryPrices = {}; // { asset: { price, atr, stopLoss, trailingStop, highest } }
+    this.entryPrices = {}; // { asset: { price, atr, stopLoss, trailingStop, tp1, tp2, highest, qty, tp1Done } }
     this.intervalId = null;
   }
 
@@ -100,33 +100,81 @@ class IchimokuBot {
     }
   }
 
+  // Gestion dynamique du sizing selon la volatilité (ATR)
+  getDynamicRisk(atrValue) {
+    if (!atrValue) return config.riskPercentage;
+    // Exemple : si ATR > 50, on réduit le risque de moitié
+    if (atrValue > 50) return config.riskPercentage / 2;
+    return config.riskPercentage;
+  }
+
   async executeVirtualTrade(symbol, signal, price, atrValue = 0) {
     const asset = symbol.split('/')[0];
+
+    // Achat
     if (signal.buy) {
-      const maxAmount = this.portfolio.USDT * (config.riskPercentage / 100);
+      const dynamicRisk = this.getDynamicRisk(atrValue);
+      const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
       const amount = maxAmount / price;
       if (amount > 0) {
         this.portfolio[asset] += amount * 0.999;
         this.portfolio.USDT -= maxAmount;
+
+        // Take profit partiel : 50% à 1xATR, 50% à 2xATR
+        const tp1 = price + 1 * atrValue;
+        const tp2 = price + 2 * atrValue;
         const stopLoss = price - config.stopLoss.atrMultiplier * atrValue;
         const trailingStop = price - config.trailing.atrMultiplier * atrValue;
+
         this.entryPrices[asset] = {
           price,
           atr: atrValue,
           stopLoss,
           trailingStop,
-          highest: price
+          tp1,
+          tp2,
+          highest: price,
+          qty: amount,
+          tp1Done: false
         };
         this.logTransaction(symbol, 'BUY', amount, price);
-        console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | SL: ${stopLoss.toFixed(6)} | TS: ${trailingStop.toFixed(6)}`);
+        console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | SL: ${stopLoss.toFixed(6)} | TS: ${trailingStop.toFixed(6)} | TP1: ${tp1.toFixed(6)} | TP2: ${tp2.toFixed(6)}`);
       }
     }
+
+    // Vente totale (sortie manuelle ou stop)
     if (signal.sell && this.portfolio[asset] > 0) {
       this.portfolio.USDT += this.portfolio[asset] * price * 0.999;
       this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
       console.log(`[SORTIE] ${symbol} @ ${price.toFixed(6)}`);
+    }
+  }
+
+  // Gestion du take profit partiel
+  async checkPartialTakeProfit(symbol, currentPrice) {
+    const asset = symbol.split('/')[0];
+    const entry = this.entryPrices[asset];
+    if (!entry || this.portfolio[asset] === 0) return;
+
+    // TP1 : vendre 50%
+    if (!entry.tp1Done && currentPrice >= entry.tp1) {
+      const qtyToSell = entry.qty * 0.5;
+      this.portfolio.USDT += qtyToSell * currentPrice * 0.999;
+      this.portfolio[asset] -= qtyToSell;
+      entry.tp1Done = true;
+      this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice);
+      console.log(`[TP1] ${symbol} : +50% @ ${currentPrice.toFixed(6)}`);
+    }
+    // TP2 : vendre le reste
+    if (entry.tp1Done && currentPrice >= entry.tp2 && this.portfolio[asset] > 0) {
+      const qtyToSell = this.portfolio[asset];
+      this.portfolio.USDT += qtyToSell * currentPrice * 0.999;
+      this.portfolio[asset] = 0;
+      this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice);
+      delete this.entryPrices[asset];
+      console.log(`[TP2] ${symbol} : +reste @ ${currentPrice.toFixed(6)}`);
     }
   }
 
@@ -154,10 +202,15 @@ class IchimokuBot {
       const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
       const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
 
-      // Filtre anti-range sur le daily (1d) pour plus de robustesse
+      // Filtre anti-range sur le daily (1d)
       if (!this.isTrending(ohlcvs['1d'])) return null;
 
-      // Trailing stop dynamique
+      // Take profit partiel
+      if (this.entryPrices[asset]) {
+        await this.checkPartialTakeProfit(symbol, currentPrice);
+      }
+
+      // Trailing stop dynamique et stop-loss
       if (this.entryPrices[asset]) {
         this.updateTrailingStop(asset, currentPrice, currentATR);
         if (currentPrice <= this.entryPrices[asset].trailingStop) {
