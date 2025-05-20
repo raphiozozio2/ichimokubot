@@ -1,7 +1,5 @@
-// bot.js
-
 const ccxt = require('ccxt');
-const { ichimokucloud, atr } = require('technicalindicators');
+const { ichimokucloud, atr, adx } = require('technicalindicators');
 const config = require('./config');
 require('dotenv').config();
 const fs = require('fs');
@@ -21,7 +19,7 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
     });
 
-    this.entryPrices = {}; // { asset: { price, atr, takeProfit } }
+    this.entryPrices = {}; // { asset: { price, atr, stopLoss, trailingStop, highest } }
     this.intervalId = null;
   }
 
@@ -33,7 +31,7 @@ class IchimokuBot {
           symbol,
           tf,
           undefined,
-          config.ichimoku.spanPeriod * 2
+          Math.max(config.ichimoku.spanPeriod * 2, 60)
         );
         results[tf] = ohlcv;
       } catch (error) {
@@ -64,6 +62,26 @@ class IchimokuBot {
     });
   }
 
+  calculateADX(ohlcv, period = 14) {
+    return adx({
+      high: ohlcv.map(c => c[2]),
+      low: ohlcv.map(c => c[3]),
+      close: ohlcv.map(c => c[4]),
+      period
+    });
+  }
+
+  isTrending(ohlcv) {
+    const adxValues = this.calculateADX(ohlcv, config.antiRange.adxPeriod);
+    const lastAdx = adxValues.length > 0 ? adxValues[adxValues.length - 1].adx : 0;
+    if (lastAdx < config.antiRange.adxThreshold) return false;
+    const ichimokuData = this.calculateIchimoku(ohlcv);
+    if (!ichimokuData || ichimokuData.length === 0) return false;
+    const last = ichimokuData[ichimokuData.length - 1];
+    const lastClose = ohlcv[ohlcv.length - 1][4];
+    return (lastClose > last.spanA && lastClose > last.spanB) || (lastClose < last.spanA && lastClose < last.spanB);
+  }
+
   generateSignal(ichimokuData, currentPrice) {
     if (!ichimokuData || ichimokuData.length === 0) return { buy: false, sell: false };
     const last = ichimokuData[ichimokuData.length - 1];
@@ -74,29 +92,37 @@ class IchimokuBot {
     };
   }
 
+  updateTrailingStop(asset, currentPrice, atrValue) {
+    if (!this.entryPrices[asset]) return;
+    if (currentPrice > this.entryPrices[asset].highest) {
+      this.entryPrices[asset].highest = currentPrice;
+      this.entryPrices[asset].trailingStop = currentPrice - config.trailing.atrMultiplier * atrValue;
+    }
+  }
+
   async executeVirtualTrade(symbol, signal, price, atrValue = 0) {
     const asset = symbol.split('/')[0];
-
-    // Achat
     if (signal.buy) {
       const maxAmount = this.portfolio.USDT * (config.riskPercentage / 100);
       const amount = maxAmount / price;
       if (amount > 0) {
-        this.portfolio[asset] += amount * 0.999; // simulate fees
+        this.portfolio[asset] += amount * 0.999;
         this.portfolio.USDT -= maxAmount;
-
-        // Définir le take profit à 2 x ATR au-dessus du prix d'entrée
-        const takeProfit = price + (2 * atrValue);
-
-        this.entryPrices[asset] = { price, atr: atrValue, takeProfit };
+        const stopLoss = price - config.stopLoss.atrMultiplier * atrValue;
+        const trailingStop = price - config.trailing.atrMultiplier * atrValue;
+        this.entryPrices[asset] = {
+          price,
+          atr: atrValue,
+          stopLoss,
+          trailingStop,
+          highest: price
+        };
         this.logTransaction(symbol, 'BUY', amount, price);
-        console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | TP: ${takeProfit.toFixed(6)}`);
+        console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | SL: ${stopLoss.toFixed(6)} | TS: ${trailingStop.toFixed(6)}`);
       }
     }
-
-    // Vente (sortie)
     if (signal.sell && this.portfolio[asset] > 0) {
-      this.portfolio.USDT += this.portfolio[asset] * price * 0.999; // simulate fees
+      this.portfolio.USDT += this.portfolio[asset] * price * 0.999;
       this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
@@ -125,19 +151,22 @@ class IchimokuBot {
       if (!ohlcvs['15m'] || ohlcvs['15m'].length === 0) return null;
       const currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
       const asset = symbol.split('/')[0];
-      const atrValues = this.calculateATR(ohlcvs['1h']);
+      const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
       const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
 
-      // Stop-loss dynamique
-      if (this.entryPrices[asset] && currentPrice <= (this.entryPrices[asset].price - currentATR * 1.5)) {
-        await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
-        console.log(`[STOP-LOSS ATR] ${symbol} @ ${currentPrice.toFixed(6)}`);
-      }
+      // Filtre anti-range sur le daily (1d) pour plus de robustesse
+      if (!this.isTrending(ohlcvs['1d'])) return null;
 
-      // Take profit automatique
-      if (this.entryPrices[asset] && currentPrice >= this.entryPrices[asset].takeProfit) {
-        await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
-        console.log(`[TAKE PROFIT] ${symbol} @ ${currentPrice.toFixed(6)}`);
+      // Trailing stop dynamique
+      if (this.entryPrices[asset]) {
+        this.updateTrailingStop(asset, currentPrice, currentATR);
+        if (currentPrice <= this.entryPrices[asset].trailingStop) {
+          await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
+          console.log(`[TRAILING STOP] ${symbol} @ ${currentPrice.toFixed(6)}`);
+        } else if (currentPrice <= this.entryPrices[asset].stopLoss) {
+          await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
+          console.log(`[STOP-LOSS ATR] ${symbol} @ ${currentPrice.toFixed(6)}`);
+        }
       }
 
       const signals = {};
@@ -212,7 +241,6 @@ class IchimokuBot {
   }
 }
 
-// === Lancement du bot ===
 const bot = new IchimokuBot();
 bot.runSimulation()
   .then(() => process.exit(0))
@@ -221,14 +249,12 @@ bot.runSimulation()
     process.exit(1);
   });
 
-// Gestion CTRL+C
 process.on('SIGINT', () => {
   console.log('\nArrêt manuel...');
   bot.exportResults();
   process.exit(0);
 });
 
-// === Serveur Express pour stats en direct ===
 const app = express();
 app.get('/stats', (req, res) => {
   fs.readFile('simulation_results.csv', 'utf8', (err, data) => {
