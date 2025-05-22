@@ -1,7 +1,6 @@
 module.exports = {
   mode: 'backtest', // 'live' ou 'backtest'
-  simulationDuration: 500000, // durée de la simulation en minutes (ajouté, à ajuster selon ton besoin)
-  initialCapital: 10000, // capital initial (à utiliser pour réinitialiser le portefeuille si besoin)
+  initialCapital: 1000,
   exchange: 'binance',
   symbols: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'],
   timeframes: ['15m', '1h', '4h', '1d'],
@@ -9,8 +8,7 @@ module.exports = {
     startDate: '2020-01-01',
     endDate: '2024-01-01'
   },
-  riskPercentage: 5, // % du capital investi par signal (à diviser si plusieurs signaux simultanés)
-  maxSimultaneousSignals: 3, // nombre max de signaux simultanés (ajouté, à adapter)
+  riskPercentage: 5,
   dynamicSizing: {
     atrThreshold: 50,
     riskReduction: 0.5
