@@ -8,7 +8,7 @@ module.exports = {
     startDate: '2020-01-01',
     endDate: '2024-01-01'
   },
-  riskPercentage: 5,
+  riskPercentage: 13,
   dynamicSizing: {
     atrThreshold: 50,
     riskReduction: 0.5
