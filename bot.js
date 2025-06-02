@@ -18,8 +18,6 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
     });
     this.entryPrices = {};
-    this.intervalId = null;
-    this.lastCycleLog = null;
     this.requestQueue = [];
     this.isProcessingQueue = false;
     this.shorts = {};
@@ -352,42 +350,34 @@ class IchimokuBot {
   }
 
   async runSimulation() {
-    return new Promise((resolve, reject) => {
-      const startTime = Date.now();
-      this.intervalId = setInterval(async () => {
-        try {
-          if (Date.now() - startTime >= config.apiSettings.rateLimit) {
-            clearInterval(this.intervalId);
-            this.exportResults();
-            resolve();
-            return;
+    let cycle = 0;
+    while (true) {
+      try {
+        cycle++;
+        console.log(`\n=== Cycle ${cycle} ===`);
+        const portefeuille = Object.entries(this.portfolio)
+          .filter(([k]) => k !== 'history')
+          .map(([k, v]) => `${k}=${v.toFixed(6)}`)
+          .join(' | ');
+        console.log('Portefeuille :', portefeuille);
+        const totalValue = await this.getPortfolioValue();
+        console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
+
+        for (const symbol of config.symbols) {
+          const analysis = await this.analyzeSymbol(symbol);
+          if (!analysis) continue;
+          const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
+          if (buySignals >= 2) {
+            await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
           }
-          const cycle = Math.floor((Date.now() - startTime) / 60000) + 1;
-          if (cycle !== this.lastCycleLog) {
-            console.log(`\n=== Cycle ${cycle} ===`);
-            const portefeuille = Object.entries(this.portfolio)
-              .filter(([k]) => k !== 'history')
-              .map(([k, v]) => `${k}=${v.toFixed(6)}`)
-              .join(' | ');
-            console.log('Portefeuille :', portefeuille);
-            const totalValue = await this.getPortfolioValue();
-            console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
-            this.lastCycleLog = cycle;
-          }
-          for (const symbol of config.symbols) {
-            const analysis = await this.analyzeSymbol(symbol);
-            if (!analysis) continue;
-            const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
-            if (buySignals >= 2) {
-              await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
-            }
-          }
-        } catch (error) {
-          clearInterval(this.intervalId);
-          reject(error);
         }
-      }, config.apiSettings.rateLimit);
-    });
+        // Attente entre chaque cycle (par exemple 60 secondes)
+        await this.delay(60000);
+      } catch (error) {
+        console.error('Erreur dans le cycle:', error);
+        await this.delay(60000);
+      }
+    }
   }
 
   exportResults() {
@@ -405,19 +395,22 @@ class IchimokuBot {
 }
 
 const bot = new IchimokuBot();
+
+// Lancement du bot
 bot.runSimulation()
-  .then(() => process.exit(0))
   .catch(error => {
     console.error('ERREUR:', error);
     process.exit(1);
   });
 
+// Arrêt propre sur SIGINT
 process.on('SIGINT', () => {
   console.log('\nArrêt manuel...');
   bot.exportResults();
   process.exit(0);
 });
 
+// Serveur web pour consulter les stats
 const app = express();
 app.get('/stats', (req, res) => {
   fs.readFile('simulation_results.csv', 'utf8', (err, data) => {
