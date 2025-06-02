@@ -1,7 +1,7 @@
 module.exports = {
   mode: 'live',
   initialCapital: 1000,
-  cycleInterval: 300000, // 5 minutes entre chaque cycle (300000ms)
+  cycleInterval: 10000, // 1 minutes entre chaque cycle (300000ms)
   exchange: 'binance',
   symbols: [
     'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
