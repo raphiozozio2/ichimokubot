@@ -1,6 +1,7 @@
 module.exports = {
-  mode: 'live', // 'live' ou 'backtest'
+  mode: 'live',
   initialCapital: 1000,
+  cycleInterval: 300000, // 5 minutes entre chaque cycle (300000ms)
   exchange: 'binance',
   symbols: [
     'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
@@ -35,11 +36,11 @@ module.exports = {
   takeProfit: {
     atrMultipliers: [1, 2],
     ratios: [0.5, 0.5],
-    target: 0.15, // 15% de profit
+    target: 0.15,
     trailing: true
   },
   shorting: {
-    maxExposure: 0.3, // 30% du portefeuille
+    maxExposure: 0.3,
     hedgeRatio: 0.5
   },
   antiRange: {

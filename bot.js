@@ -21,6 +21,8 @@ class IchimokuBot {
     this.requestQueue = [];
     this.isProcessingQueue = false;
     this.shorts = {};
+    this.isRunning = false;
+    this.cycleCount = 0;
   }
 
   async delay(ms = 1000) {
@@ -197,30 +199,6 @@ class IchimokuBot {
         console.log(`[SHORT] ${symbol} @ ${price.toFixed(6)} | SL: ${this.shorts[asset].stopLoss.toFixed(6)} | TP1: ${this.shorts[asset].tp1.toFixed(6)} | TP2: ${this.shorts[asset].tp2.toFixed(6)}`);
       }
     }
-
-    if (signal.takeProfit && this.shorts[asset]) {
-      const short = this.shorts[asset];
-      if (price <= short.tp1 && !short.tp1Done) {
-        const qtyToCover = short.qty * 0.5;
-        this.portfolio.USDT -= qtyToCover * price * 0.999;
-        short.qty -= qtyToCover;
-        short.tp1Done = true;
-        this.logTransaction(symbol, 'COVER1', qtyToCover, price);
-        console.log(`[COVER1] ${symbol} : +50% @ ${price.toFixed(6)}`);
-      }
-      if (short.tp1Done && price <= short.tp2 && short.qty > 0) {
-        this.portfolio.USDT -= short.qty * price * 0.999;
-        this.logTransaction(symbol, 'COVER2', short.qty, price);
-        delete this.shorts[asset];
-        console.log(`[COVER2] ${symbol} : +reste @ ${price.toFixed(6)}`);
-      }
-      if (price >= short.stopLoss) {
-        this.portfolio.USDT -= short.qty * price * 0.999;
-        this.logTransaction(symbol, 'COVER_SL', short.qty, price);
-        delete this.shorts[asset];
-        console.log(`[COVER_SL] ${symbol} @ ${price.toFixed(6)}`);
-      }
-    }
   }
 
   async checkPartialTakeProfit(symbol, currentPrice) {
@@ -319,89 +297,191 @@ class IchimokuBot {
 
       const shortSignal = signals['1d']?.short;
       if (shortSignal) {
-        await this.executeVirtualTrade(symbol, { short: true, takeProfit: false }, currentPrice, currentATR);
+        await this.executeVirtualTrade(symbol, { short: true }, currentPrice, currentATR);
       }
 
-      return { signals, currentPrice, currentATR };
+      const buySignal = signals['15m']?.buy && signals['1h']?.buy;
+      const sellSignal = signals['15m']?.sell;
+
+      if (buySignal) {
+        await this.executeVirtualTrade(symbol, { buy: true }, currentPrice, currentATR);
+      } else if (sellSignal) {
+        await this.executeVirtualTrade(symbol, { sell: true }, currentPrice, currentATR);
+      }
+
+      return { symbol, currentPrice, signals, atr: currentATR };
     } catch (error) {
       console.error(`Erreur analyse ${symbol}:`, error.message);
       return null;
     }
   }
 
-  async getPortfolioValue() {
+  getTotalValue() {
     let total = this.portfolio.USDT;
-    for (const [asset, quantity] of Object.entries(this.portfolio)) {
-      if (asset === 'USDT' || asset === 'history' || quantity === 0) continue;
-      try {
-        await this.delay(1000);
-        const ticker = await this.exchange.fetchTicker(`${asset}/USDT`);
-        total += quantity * ticker.last;
-      } catch (error) {
-        console.error(`Erreur prix ${asset}:`, error.message);
-      }
-    }
     return total;
   }
 
-  async runLive() {
-    let cycle = 0;
-    while (true) {
-      cycle++;
-      console.log(`\n=== Cycle ${cycle} ===`);
-      const portefeuille = Object.entries(this.portfolio)
-        .filter(([k]) => k !== 'history')
-        .map(([k, v]) => `${k}=${v.toFixed(6)}`)
-        .join(' | ');
-      console.log('Portefeuille :', portefeuille);
-      const totalValue = await this.getPortfolioValue();
-      console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
-
-      for (const symbol of config.symbols) {
-        const analysis = await this.analyzeSymbol(symbol);
-        if (!analysis) continue;
-        const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
-        if (buySignals >= 2) {
-          await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
-        }
-      }
-      await this.delay(60000);
-    }
+  displayPortfolio() {
+    const portfolioStr = Object.entries(this.portfolio)
+      .filter(([key]) => key !== 'history')
+      .map(([asset, amount]) => `${asset}=${amount.toFixed(6)}`)
+      .join(' | ');
+    
+    console.log(`Portefeuille : ${portfolioStr}`);
+    console.log(`Valeur totale : $${this.getTotalValue().toFixed(2)}`);
   }
 
-  exportResults() {
+  // NOUVELLE MÉTHODE : Cycle principal d'exécution
+  async runCycle() {
     try {
-      const csvContent = this.portfolio.history
-        .map(entry => `${entry.timestamp},${entry.symbol},${entry.type},${entry.amount},${entry.price}`)
-        .join('\n');
-      fs.writeFileSync('simulation_results.csv', 'Timestamp,Symbol,Type,Amount,Price\n' + csvContent);
-      console.log('\n=== Résultats finaux ===');
-      console.log('Portefeuille :', this.portfolio);
-    } catch (err) {
-      console.error('Erreur exportResults:', err);
+      this.cycleCount++;
+      console.log(`\n=== Cycle ${this.cycleCount} ===\n`);
+      
+      this.displayPortfolio();
+      
+      // Analyser tous les symboles
+      const analysisPromises = config.symbols.map(symbol => this.analyzeSymbol(symbol));
+      const results = await Promise.allSettled(analysisPromises);
+      
+      let successCount = 0;
+      results.forEach((result, index) => {
+        if (result.status === 'fulfilled' && result.value) {
+          successCount++;
+        } else if (result.status === 'rejected') {
+          console.error(`Erreur analyse ${config.symbols[index]}:`, result.reason?.message);
+        }
+      });
+      
+      console.log(`\nCycle ${this.cycleCount} terminé - ${successCount}/${config.symbols.length} symboles analysés avec succès`);
+      console.log(`Valeur finale : $${this.getTotalValue().toFixed(2)}\n`);
+      
+    } catch (error) {
+      console.error(`Erreur dans le cycle ${this.cycleCount}:`, error.message);
     }
+  }
+
+  // NOUVELLE MÉTHODE : Boucle principale continue
+  async start() {
+    if (this.isRunning) {
+      console.log('Le bot est déjà en cours d\'exécution');
+      return;
+    }
+
+    this.isRunning = true;
+    console.log('🚀 Démarrage du bot Ichimoku');
+    console.log(`💰 Capital initial : $${config.initialCapital}`);
+    console.log(`📊 Symboles surveillés : ${config.symbols.length}`);
+    console.log(`⏱️  Interval entre cycles : ${config.cycleInterval || 300000}ms (${(config.cycleInterval || 300000) / 1000 / 60} minutes)`);
+    
+    // Premier cycle immédiat
+    await this.runCycle();
+    
+    // Puis cycles réguliers
+    while (this.isRunning) {
+      try {
+        // Attendre l'intervalle configuré (par défaut 5 minutes)
+        await this.delay(config.cycleInterval || 300000);
+        
+        if (this.isRunning) {
+          await this.runCycle();
+        }
+      } catch (error) {
+        console.error('Erreur dans la boucle principale:', error.message);
+        // Attendre un peu avant de continuer en cas d'erreur
+        await this.delay(60000); // 1 minute
+      }
+    }
+  }
+
+  // NOUVELLE MÉTHODE : Arrêt propre
+  stop() {
+    console.log('🛑 Arrêt du bot demandé...');
+    this.isRunning = false;
+  }
+
+  // NOUVELLE MÉTHODE : Statut du bot
+  getStatus() {
+    return {
+      isRunning: this.isRunning,
+      cycleCount: this.cycleCount,
+      portfolio: { ...this.portfolio },
+      totalValue: this.getTotalValue(),
+      openPositions: Object.keys(this.entryPrices).length,
+      shortPositions: Object.keys(this.shorts).length
+    };
   }
 }
 
-const bot = new IchimokuBot();
-
-// Mini serveur Express pour garder le process actif sur Railway
-const app = express();
-app.get('/', (req, res) => res.send('Bot trading en cours...'));
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log(`Serveur Express démarré sur le port ${PORT}`));
-
-// Lance le bot en mode live
-if (config.mode === 'live') {
-  bot.runLive()
-    .catch(error => {
-      console.error('ERREUR:', error);
-      process.exit(1);
+// NOUVELLE SECTION : Démarrage et serveur Express
+async function main() {
+  const bot = new IchimokuBot();
+  
+  // Configuration du serveur Express pour monitoring
+  const app = express();
+  app.use(express.json());
+  
+  // Route de santé
+  app.get('/health', (req, res) => {
+    res.json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime() 
     });
+  });
+  
+  // Route de statut du bot
+  app.get('/status', (req, res) => {
+    res.json(bot.getStatus());
+  });
+  
+  // Route pour arrêter le bot
+  app.post('/stop', (req, res) => {
+    bot.stop();
+    res.json({ message: 'Arrêt du bot demandé' });
+  });
+  
+  // Route pour redémarrer le bot
+  app.post('/restart', async (req, res) => {
+    bot.stop();
+    setTimeout(async () => {
+      await bot.start();
+    }, 5000);
+    res.json({ message: 'Redémarrage du bot en cours...' });
+  });
+  
+  const PORT = process.env.PORT || 8080;
+  app.listen(PORT, () => {
+    console.log(`Serveur Express démarré sur le port ${PORT}`);
+  });
+  
+  // Gestion des signaux pour arrêt propre
+  process.on('SIGINT', () => {
+    console.log('\n🛑 Signal SIGINT reçu, arrêt du bot...');
+    bot.stop();
+    process.exit(0);
+  });
+  
+  process.on('SIGTERM', () => {
+    console.log('\n🛑 Signal SIGTERM reçu, arrêt du bot...');
+    bot.stop();
+    process.exit(0);
+  });
+  
+  // Démarrer le bot
+  try {
+    await bot.start();
+  } catch (error) {
+    console.error('Erreur lors du démarrage du bot:', error);
+    process.exit(1);
+  }
 }
 
-process.on('SIGINT', () => {
-  console.log('\nArrêt manuel...');
-  bot.exportResults();
-  process.exit(0);
-});
+// Démarrage de l'application
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Erreur fatale:', error);
+    process.exit(1);
+  });
+}
+
+module.exports = IchimokuBot;
