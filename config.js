@@ -2,7 +2,11 @@ module.exports = {
   mode: 'backtest', // 'live' ou 'backtest'
   initialCapital: 1000,
   exchange: 'binance',
-  symbols: ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'],
+  symbols: ['BTC/USDT', 'ETH/USDT', 'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
+'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
+'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
+'SOL/USDT', 'BTG/USDT', 'ACH/USDT',
+'BEL/USDT'],
   timeframes: ['15m', '1h', '4h', '1d'],
   backtest: {
     startDate: '2020-01-01',
