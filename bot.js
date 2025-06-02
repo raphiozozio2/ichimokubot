@@ -20,32 +20,52 @@ class IchimokuBot {
     this.entryPrices = {};
     this.intervalId = null;
     this.lastCycleLog = null;
+    this.requestQueue = [];
+    this.isProcessingQueue = false;
+    this.shorts = {};
   }
 
-  // Ajoute un délai entre chaque requête OHLCV
   async delay(ms = 1000) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  async processQueue() {
+    if (this.requestQueue.length === 0 || this.isProcessingQueue) return;
+    this.isProcessingQueue = true;
+    const batch = this.requestQueue.splice(0, 5); // Traite par batch de 5
+    const results = await Promise.allSettled(batch.map(req => req.fn()));
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        batch[index].reject(result.reason);
+      } else {
+        batch[index].resolve(result.value);
+      }
+    });
+    this.isProcessingQueue = false;
+    this.processQueue();
+  }
+
   async fetchMultiTimeframeOHLCV(symbol) {
+    const queueRequest = (tf) => new Promise((resolve, reject) => {
+      this.requestQueue.push({
+        fn: async () => {
+          try {
+            const ohlcv = await this.exchange.fetchOHLCV(
+              symbol, tf, undefined, Math.max(config.ichimoku.spanPeriod * 2, 60)
+            );
+            resolve(ohlcv);
+          } catch (error) {
+            reject(error);
+          }
+        },
+        resolve,
+        reject
+      });
+    });
+    this.processQueue();
     const results = {};
     for (const tf of config.timeframes) {
-      try {
-        await this.delay(1000); // Délai de 1 seconde entre chaque timeframe
-        const ohlcv = await this.exchange.fetchOHLCV(
-          symbol,
-          tf,
-          undefined,
-          Math.max(config.ichimoku.spanPeriod * 2, 60)
-        );
-        results[tf] = ohlcv;
-      } catch (error) {
-        console.error(`Erreur fetchOHLCV (${symbol} ${tf}):`, error.message);
-        if (error.message.includes('429') || error.message.includes('418')) {
-          // Si erreur de rate limit, on arrête tout
-          throw error;
-        }
-      }
+      results[tf] = await queueRequest(tf);
     }
     return results;
   }
@@ -92,12 +112,13 @@ class IchimokuBot {
   }
 
   generateSignal(ichimokuData, currentPrice) {
-    if (!ichimokuData || ichimokuData.length === 0) return { buy: false, sell: false };
+    if (!ichimokuData || ichimokuData.length === 0) return { buy: false, sell: false, short: false };
     const last = ichimokuData[ichimokuData.length - 1];
     const inCloud = currentPrice > last.spanA && currentPrice > last.spanB;
     return {
       buy: inCloud && currentPrice > last.conversion && last.conversion > last.base,
-      sell: !inCloud && currentPrice < last.conversion
+      sell: !inCloud && currentPrice < last.conversion,
+      short: !inCloud && currentPrice < last.conversion && currentPrice < last.spanA
     };
   }
 
@@ -117,6 +138,13 @@ class IchimokuBot {
 
   async executeVirtualTrade(symbol, signal, price, atrValue = 0) {
     const asset = symbol.split('/')[0];
+    // Vérification du prix actuel
+    const currentTicker = await this.exchange.fetchTicker(symbol);
+    if (Math.abs(currentTicker.last - price) > currentTicker.last * 0.005) {
+      console.log(`[REJECT] Écart de prix trop important ${symbol}`);
+      return;
+    }
+
     if (signal.buy) {
       if (this.entryPrices[asset]) return;
       const dynamicRisk = this.getDynamicRisk(atrValue);
@@ -144,12 +172,59 @@ class IchimokuBot {
         console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | SL: ${stopLoss.toFixed(6)} | TS: ${trailingStop.toFixed(6)} | TP1: ${tp1.toFixed(6)} | TP2: ${tp2.toFixed(6)}`);
       }
     }
+
     if (signal.sell && this.portfolio[asset] > 0) {
       this.portfolio.USDT += this.portfolio[asset] * price * 0.999;
       this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
       console.log(`[SORTIE] ${symbol} @ ${price.toFixed(6)}`);
+    }
+
+    // Shorting
+    if (signal.short && !this.shorts[asset]) {
+      const dynamicRisk = this.getDynamicRisk(atrValue);
+      const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
+      const amount = maxAmount / price;
+      if (amount > 0 && this.portfolio.USDT >= maxAmount) {
+        this.shorts[asset] = {
+          price,
+          atr: atrValue,
+          qty: amount,
+          stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
+          tp1: price - 1 * atrValue,
+          tp2: price - 2 * atrValue,
+          tp1Done: false
+        };
+        this.portfolio.USDT += amount * price * 0.999; // Simule l'emprunt et la vente à découvert
+        this.logTransaction(symbol, 'SHORT', amount, price);
+        console.log(`[SHORT] ${symbol} @ ${price.toFixed(6)} | SL: ${this.shorts[asset].stopLoss.toFixed(6)} | TP1: ${this.shorts[asset].tp1.toFixed(6)} | TP2: ${this.shorts[asset].tp2.toFixed(6)}`);
+      }
+    }
+
+    // Take profit / stop loss sur short
+    if (signal.takeProfit && this.shorts[asset]) {
+      const short = this.shorts[asset];
+      if (price <= short.tp1 && !short.tp1Done) {
+        const qtyToCover = short.qty * 0.5;
+        this.portfolio.USDT -= qtyToCover * price * 0.999; // Simule le rachat partiel
+        short.qty -= qtyToCover;
+        short.tp1Done = true;
+        this.logTransaction(symbol, 'COVER1', qtyToCover, price);
+        console.log(`[COVER1] ${symbol} : +50% @ ${price.toFixed(6)}`);
+      }
+      if (short.tp1Done && price <= short.tp2 && short.qty > 0) {
+        this.portfolio.USDT -= short.qty * price * 0.999; // Simule le rachat final
+        this.logTransaction(symbol, 'COVER2', short.qty, price);
+        delete this.shorts[asset];
+        console.log(`[COVER2] ${symbol} : +reste @ ${price.toFixed(6)}`);
+      }
+      if (price >= short.stopLoss) {
+        this.portfolio.USDT -= short.qty * price * 0.999; // Simule le stop loss
+        this.logTransaction(symbol, 'COVER_SL', short.qty, price);
+        delete this.shorts[asset];
+        console.log(`[COVER_SL] ${symbol} @ ${price.toFixed(6)}`);
+      }
     }
   }
 
@@ -172,6 +247,30 @@ class IchimokuBot {
       this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice);
       delete this.entryPrices[asset];
       console.log(`[TP2] ${symbol} : +reste @ ${currentPrice.toFixed(6)}`);
+    }
+    // Gestion des shorts
+    const short = this.shorts[asset];
+    if (short) {
+      if (currentPrice <= short.tp1 && !short.tp1Done) {
+        const qtyToCover = short.qty * 0.5;
+        this.portfolio.USDT -= qtyToCover * currentPrice * 0.999;
+        short.qty -= qtyToCover;
+        short.tp1Done = true;
+        this.logTransaction(symbol, 'COVER1', qtyToCover, currentPrice);
+        console.log(`[COVER1] ${symbol} : +50% @ ${currentPrice.toFixed(6)}`);
+      }
+      if (short.tp1Done && currentPrice <= short.tp2 && short.qty > 0) {
+        this.portfolio.USDT -= short.qty * currentPrice * 0.999;
+        this.logTransaction(symbol, 'COVER2', short.qty, currentPrice);
+        delete this.shorts[asset];
+        console.log(`[COVER2] ${symbol} : +reste @ ${currentPrice.toFixed(6)}`);
+      }
+      if (currentPrice >= short.stopLoss) {
+        this.portfolio.USDT -= short.qty * currentPrice * 0.999;
+        this.logTransaction(symbol, 'COVER_SL', short.qty, currentPrice);
+        delete this.shorts[asset];
+        console.log(`[COVER_SL] ${symbol} @ ${currentPrice.toFixed(6)}`);
+      }
     }
   }
 
@@ -203,24 +302,33 @@ class IchimokuBot {
       const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
       const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
       if (!this.isTrending(ohlcvs['1d'])) return null;
+
       if (this.entryPrices[asset]) {
         await this.checkPartialTakeProfit(symbol, currentPrice);
-      }
-      if (this.entryPrices[asset]) {
-        this.updateTrailingStop(asset, currentPrice, currentATR);
-        if (currentPrice <= this.entryPrices[asset].trailingStop) {
-          await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
-          console.log(`[TRAILING STOP] ${symbol} @ ${currentPrice.toFixed(6)}`);
-        } else if (currentPrice <= this.entryPrices[asset].stopLoss) {
-          await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
-          console.log(`[STOP-LOSS ATR] ${symbol} @ ${currentPrice.toFixed(6)}`);
+        if (this.entryPrices[asset]) {
+          this.updateTrailingStop(asset, currentPrice, currentATR);
+          if (currentPrice <= this.entryPrices[asset].trailingStop) {
+            await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
+            console.log(`[TRAILING STOP] ${symbol} @ ${currentPrice.toFixed(6)}`);
+          } else if (currentPrice <= this.entryPrices[asset].stopLoss) {
+            await this.executeVirtualTrade(symbol, { sell: true }, currentPrice);
+            console.log(`[STOP-LOSS ATR] ${symbol} @ ${currentPrice.toFixed(6)}`);
+          }
         }
       }
+
       const signals = {};
       for (const [tf, ohlcv] of Object.entries(ohlcvs)) {
         const ichimokuData = this.calculateIchimoku(ohlcv);
         signals[tf] = this.generateSignal(ichimokuData, currentPrice);
       }
+
+      // On vérifie aussi le signal de shorting
+      const shortSignal = signals['1d']?.short;
+      if (shortSignal) {
+        await this.executeVirtualTrade(symbol, { short: true, takeProfit: false }, currentPrice, currentATR);
+      }
+
       return { signals, currentPrice, currentATR };
     } catch (error) {
       console.error(`Erreur analyse ${symbol}:`, error.message);
@@ -233,7 +341,7 @@ class IchimokuBot {
     for (const [asset, quantity] of Object.entries(this.portfolio)) {
       if (asset === 'USDT' || asset === 'history' || quantity === 0) continue;
       try {
-        await this.delay(1000); // Délai pour éviter le rate limit sur fetchTicker
+        await this.delay(1000);
         const ticker = await this.exchange.fetchTicker(`${asset}/USDT`);
         total += quantity * ticker.last;
       } catch (error) {
@@ -248,7 +356,7 @@ class IchimokuBot {
       const startTime = Date.now();
       this.intervalId = setInterval(async () => {
         try {
-          if (Date.now() - startTime >= config.simulationDuration * 60 * 1000) {
+          if (Date.now() - startTime >= config.apiSettings.rateLimit) {
             clearInterval(this.intervalId);
             this.exportResults();
             resolve();

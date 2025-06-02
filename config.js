@@ -2,11 +2,13 @@ module.exports = {
   mode: 'backtest', // 'live' ou 'backtest'
   initialCapital: 1000,
   exchange: 'binance',
-  symbols: ['BTC/USDT', 'ETH/USDT', 'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
-'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
-'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
-'SOL/USDT', 'BTG/USDT', 'ACH/USDT',
-'BEL/USDT'],
+  symbols: [
+    'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
+    'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
+    'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
+    'SOL/USDT', 'BTG/USDT', 'ACH/USDT',
+    'BEL/USDT'
+  ],
   timeframes: ['15m', '1h', '4h', '1d'],
   backtest: {
     startDate: '2020-01-01',
@@ -32,7 +34,13 @@ module.exports = {
   },
   takeProfit: {
     atrMultipliers: [1, 2],
-    ratios: [0.5, 0.5]
+    ratios: [0.5, 0.5],
+    target: 0.15, // 15% de profit
+    trailing: true
+  },
+  shorting: {
+    maxExposure: 0.3, // 30% du portefeuille
+    hedgeRatio: 0.5
   },
   antiRange: {
     adxPeriod: 14,
