@@ -188,8 +188,8 @@ class IchimokuBot {
           atr: atrValue,
           qty: amount,
           stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
-          tp1 = price - 1 * atrValue,
-          tp2 = price - 2 * atrValue,
+          tp1 : price - 1 * atrValue,
+          tp2 : price - 2 * atrValue,
           tp1Done: false
         };
         this.portfolio.USDT += amount * price * 0.999;
