@@ -3,6 +3,7 @@ const { ichimokucloud, atr, adx } = require('technicalindicators');
 const config = require('./config');
 require('dotenv').config();
 const fs = require('fs');
+const express = require('express');
 
 class IchimokuBot {
   constructor() {
@@ -135,7 +136,6 @@ class IchimokuBot {
 
   async executeVirtualTrade(symbol, signal, price, atrValue = 0) {
     const asset = symbol.split('/')[0];
-    // Vérification du prix actuel
     const currentTicker = await this.exchange.fetchTicker(symbol);
     if (Math.abs(currentTicker.last - price) > currentTicker.last * 0.005) {
       console.log(`[REJECT] Écart de prix trop important ${symbol}`);
@@ -178,7 +178,6 @@ class IchimokuBot {
       console.log(`[SORTIE] ${symbol} @ ${price.toFixed(6)}`);
     }
 
-    // Shorting
     if (signal.short && !this.shorts[asset]) {
       const dynamicRisk = this.getDynamicRisk(atrValue);
       const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
@@ -189,35 +188,34 @@ class IchimokuBot {
           atr: atrValue,
           qty: amount,
           stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
-          tp1: price - 1 * atrValue,
-          tp2: price - 2 * atrValue,
+          tp1 = price - 1 * atrValue,
+          tp2 = price - 2 * atrValue,
           tp1Done: false
         };
-        this.portfolio.USDT += amount * price * 0.999; // Simule l'emprunt et la vente à découvert
+        this.portfolio.USDT += amount * price * 0.999;
         this.logTransaction(symbol, 'SHORT', amount, price);
         console.log(`[SHORT] ${symbol} @ ${price.toFixed(6)} | SL: ${this.shorts[asset].stopLoss.toFixed(6)} | TP1: ${this.shorts[asset].tp1.toFixed(6)} | TP2: ${this.shorts[asset].tp2.toFixed(6)}`);
       }
     }
 
-    // Take profit / stop loss sur short
     if (signal.takeProfit && this.shorts[asset]) {
       const short = this.shorts[asset];
       if (price <= short.tp1 && !short.tp1Done) {
         const qtyToCover = short.qty * 0.5;
-        this.portfolio.USDT -= qtyToCover * price * 0.999; // Simule le rachat partiel
+        this.portfolio.USDT -= qtyToCover * price * 0.999;
         short.qty -= qtyToCover;
         short.tp1Done = true;
         this.logTransaction(symbol, 'COVER1', qtyToCover, price);
         console.log(`[COVER1] ${symbol} : +50% @ ${price.toFixed(6)}`);
       }
       if (short.tp1Done && price <= short.tp2 && short.qty > 0) {
-        this.portfolio.USDT -= short.qty * price * 0.999; // Simule le rachat final
+        this.portfolio.USDT -= short.qty * price * 0.999;
         this.logTransaction(symbol, 'COVER2', short.qty, price);
         delete this.shorts[asset];
         console.log(`[COVER2] ${symbol} : +reste @ ${price.toFixed(6)}`);
       }
       if (price >= short.stopLoss) {
-        this.portfolio.USDT -= short.qty * price * 0.999; // Simule le stop loss
+        this.portfolio.USDT -= short.qty * price * 0.999;
         this.logTransaction(symbol, 'COVER_SL', short.qty, price);
         delete this.shorts[asset];
         console.log(`[COVER_SL] ${symbol} @ ${price.toFixed(6)}`);
@@ -245,7 +243,6 @@ class IchimokuBot {
       delete this.entryPrices[asset];
       console.log(`[TP2] ${symbol} : +reste @ ${currentPrice.toFixed(6)}`);
     }
-    // Gestion des shorts
     const short = this.shorts[asset];
     if (short) {
       if (currentPrice <= short.tp1 && !short.tp1Done) {
@@ -320,7 +317,6 @@ class IchimokuBot {
         signals[tf] = this.generateSignal(ichimokuData, currentPrice);
       }
 
-      // On vérifie aussi le signal de shorting
       const shortSignal = signals['1d']?.short;
       if (shortSignal) {
         await this.executeVirtualTrade(symbol, { short: true, takeProfit: false }, currentPrice, currentATR);
@@ -348,37 +344,6 @@ class IchimokuBot {
     return total;
   }
 
-  async runBacktest() {
-    // Ici, il faudrait implémenter une vraie simulation historique
-    // Mais pour l'exemple, on va juste faire un cycle d'analyse
-    // (à adapter si tu veux une vraie simulation)
-    let cycle = 0;
-    while (cycle < 1) { // Un seul cycle pour l'exemple, à adapter selon ta logique
-      cycle++;
-      console.log(`\n=== Cycle ${cycle} ===`);
-      const portefeuille = Object.entries(this.portfolio)
-        .filter(([k]) => k !== 'history')
-        .map(([k, v]) => `${k}=${v.toFixed(6)}`)
-        .join(' | ');
-      console.log('Portefeuille :', portefeuille);
-      const totalValue = await this.getPortfolioValue();
-      console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
-
-      for (const symbol of config.symbols) {
-        const analysis = await this.analyzeSymbol(symbol);
-        if (!analysis) continue;
-        const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
-        if (buySignals >= 2) {
-          await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
-        }
-      }
-      // Attente entre chaque cycle (pour éviter le rate limit)
-      await this.delay(60000);
-    }
-    this.exportResults();
-    process.exit(0); // Fin du backtest
-  }
-
   async runLive() {
     let cycle = 0;
     while (true) {
@@ -400,7 +365,6 @@ class IchimokuBot {
           await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
         }
       }
-      // Attente entre chaque cycle (par exemple 60 secondes)
       await this.delay(60000);
     }
   }
@@ -421,14 +385,14 @@ class IchimokuBot {
 
 const bot = new IchimokuBot();
 
-// Choix du mode
-if (config.mode === 'backtest') {
-  bot.runBacktest()
-    .catch(error => {
-      console.error('ERREUR:', error);
-      process.exit(1);
-    });
-} else if (config.mode === 'live') {
+// Mini serveur Express pour garder le process actif sur Railway
+const app = express();
+app.get('/', (req, res) => res.send('Bot trading en cours...'));
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => console.log(`Serveur Express démarré sur le port ${PORT}`));
+
+// Lance le bot en mode live
+if (config.mode === 'live') {
   bot.runLive()
     .catch(error => {
       console.error('ERREUR:', error);
