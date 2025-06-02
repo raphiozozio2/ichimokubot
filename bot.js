@@ -3,7 +3,6 @@ const { ichimokucloud, atr, adx } = require('technicalindicators');
 const config = require('./config');
 require('dotenv').config();
 const fs = require('fs');
-const express = require('express');
 
 class IchimokuBot {
   constructor() {
@@ -30,7 +29,7 @@ class IchimokuBot {
   async processQueue() {
     if (this.requestQueue.length === 0 || this.isProcessingQueue) return;
     this.isProcessingQueue = true;
-    const batch = this.requestQueue.splice(0, 5); // Traite par batch de 5
+    const batch = this.requestQueue.splice(0, 5);
     const results = await Promise.allSettled(batch.map(req => req.fn()));
     results.forEach((result, index) => {
       if (result.status === 'rejected') {
@@ -349,34 +348,60 @@ class IchimokuBot {
     return total;
   }
 
-  async runSimulation() {
+  async runBacktest() {
+    // Ici, il faudrait implémenter une vraie simulation historique
+    // Mais pour l'exemple, on va juste faire un cycle d'analyse
+    // (à adapter si tu veux une vraie simulation)
+    let cycle = 0;
+    while (cycle < 1) { // Un seul cycle pour l'exemple, à adapter selon ta logique
+      cycle++;
+      console.log(`\n=== Cycle ${cycle} ===`);
+      const portefeuille = Object.entries(this.portfolio)
+        .filter(([k]) => k !== 'history')
+        .map(([k, v]) => `${k}=${v.toFixed(6)}`)
+        .join(' | ');
+      console.log('Portefeuille :', portefeuille);
+      const totalValue = await this.getPortfolioValue();
+      console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
+
+      for (const symbol of config.symbols) {
+        const analysis = await this.analyzeSymbol(symbol);
+        if (!analysis) continue;
+        const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
+        if (buySignals >= 2) {
+          await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
+        }
+      }
+      // Attente entre chaque cycle (pour éviter le rate limit)
+      await this.delay(60000);
+    }
+    this.exportResults();
+    process.exit(0); // Fin du backtest
+  }
+
+  async runLive() {
     let cycle = 0;
     while (true) {
-      try {
-        cycle++;
-        console.log(`\n=== Cycle ${cycle} ===`);
-        const portefeuille = Object.entries(this.portfolio)
-          .filter(([k]) => k !== 'history')
-          .map(([k, v]) => `${k}=${v.toFixed(6)}`)
-          .join(' | ');
-        console.log('Portefeuille :', portefeuille);
-        const totalValue = await this.getPortfolioValue();
-        console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
+      cycle++;
+      console.log(`\n=== Cycle ${cycle} ===`);
+      const portefeuille = Object.entries(this.portfolio)
+        .filter(([k]) => k !== 'history')
+        .map(([k, v]) => `${k}=${v.toFixed(6)}`)
+        .join(' | ');
+      console.log('Portefeuille :', portefeuille);
+      const totalValue = await this.getPortfolioValue();
+      console.log(`Valeur totale : $${totalValue.toFixed(2)}`);
 
-        for (const symbol of config.symbols) {
-          const analysis = await this.analyzeSymbol(symbol);
-          if (!analysis) continue;
-          const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
-          if (buySignals >= 2) {
-            await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
-          }
+      for (const symbol of config.symbols) {
+        const analysis = await this.analyzeSymbol(symbol);
+        if (!analysis) continue;
+        const buySignals = Object.values(analysis.signals).filter(s => s?.buy).length;
+        if (buySignals >= 2) {
+          await this.executeVirtualTrade(symbol, { buy: true }, analysis.currentPrice, analysis.currentATR);
         }
-        // Attente entre chaque cycle (par exemple 60 secondes)
-        await this.delay(60000);
-      } catch (error) {
-        console.error('Erreur dans le cycle:', error);
-        await this.delay(60000);
       }
+      // Attente entre chaque cycle (par exemple 60 secondes)
+      await this.delay(60000);
     }
   }
 
@@ -396,33 +421,23 @@ class IchimokuBot {
 
 const bot = new IchimokuBot();
 
-// Lancement du bot
-bot.runSimulation()
-  .catch(error => {
-    console.error('ERREUR:', error);
-    process.exit(1);
-  });
+// Choix du mode
+if (config.mode === 'backtest') {
+  bot.runBacktest()
+    .catch(error => {
+      console.error('ERREUR:', error);
+      process.exit(1);
+    });
+} else if (config.mode === 'live') {
+  bot.runLive()
+    .catch(error => {
+      console.error('ERREUR:', error);
+      process.exit(1);
+    });
+}
 
-// Arrêt propre sur SIGINT
 process.on('SIGINT', () => {
   console.log('\nArrêt manuel...');
   bot.exportResults();
   process.exit(0);
 });
-
-// Serveur web pour consulter les stats
-const app = express();
-app.get('/stats', (req, res) => {
-  fs.readFile('simulation_results.csv', 'utf8', (err, data) => {
-    if (err) return res.status(500).send('Erreur lecture fichier');
-    res.type('text/plain').send(data);
-  });
-});
-app.get('/transactions', (req, res) => {
-  fs.readFile('transactions.log', 'utf8', (err, data) => {
-    if (err) return res.status(500).send('Erreur lecture fichier');
-    res.type('text/plain').send(data);
-  });
-});
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Stats disponibles sur http://localhost:${PORT}/stats`));
