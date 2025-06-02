@@ -1,5 +1,5 @@
 module.exports = {
-  mode: 'backtest', // 'live' ou 'backtest'
+  mode: 'live', // 'live' ou 'backtest'
   initialCapital: 1000,
   exchange: 'binance',
   symbols: [
