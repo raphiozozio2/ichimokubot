@@ -1,9 +1,10 @@
 module.exports = {
   mode: 'live',
   initialCapital: 1000,
-  cycleInterval: 10000, // 1 minutes entre chaque cycle (300000ms)
+  cycleInterval: 30000, // 5 minutes entre chaque cycle
   exchange: 'binance',
   symbols: [
+    'BTC/USDT', 'ETH/USDT', // Ajout BTC et ETH
     'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
     'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
     'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
