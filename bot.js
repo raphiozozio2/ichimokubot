@@ -24,7 +24,7 @@ class IchimokuBot {
     this.isRunning = false;
     this.cycleCount = 0;
     this.lastAnalysisErrors = {};
-    this.initialCapital = config.initialCapital; // Pour calcul drawdown
+    this.initialCapital = config.initialCapital;
     this.metrics = {
       totalTrades: 0,
       winningTrades: 0,
@@ -38,7 +38,6 @@ class IchimokuBot {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // AMÉLIORATION: Retry automatique sur erreurs API
   async retryApiCall(apiCall, maxRetries = config.apiSettings.retryAttempts) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
@@ -50,7 +49,6 @@ class IchimokuBot {
           throw error;
         }
         
-        // Attendre avant retry (délai exponentiel)
         const delay = config.apiSettings.retryDelay * Math.pow(2, attempt - 1);
         console.log(`⏳ Retry dans ${delay}ms...`);
         await this.delay(delay);
@@ -58,7 +56,6 @@ class IchimokuBot {
     }
   }
 
-  // AMÉLIORATION: Fetch avec retry et validation
   async fetchMultiTimeframeOHLCV(symbol) {
     const results = {};
     
@@ -79,13 +76,12 @@ class IchimokuBot {
       };
       
       results[tf] = await this.retryApiCall(apiCall);
-      await this.delay(200); // Délai entre requêtes
+      await this.delay(200);
     }
     
     return results;
   }
 
-  // AMÉLIORATION: Validation des prix stricte
   async validatePrice(symbol, price) {
     try {
       const ticker = await this.retryApiCall(async () => {
@@ -209,13 +205,11 @@ class IchimokuBot {
     }
   }
 
-  // AMÉLIORATION: Contrôle nombre de positions
   canOpenNewPosition() {
     const currentPositions = Object.keys(this.entryPrices).length + Object.keys(this.shorts).length;
     return currentPositions < config.maxPositions;
   }
 
-  // AMÉLIORATION: Calcul et contrôle drawdown
   updateDrawdown() {
     const currentValue = this.getTotalValue();
     const drawdownPercent = (this.initialCapital - currentValue) / this.initialCapital * 100;
@@ -223,7 +217,6 @@ class IchimokuBot {
     this.metrics.currentDrawdown = Math.max(0, drawdownPercent);
     this.metrics.maxDrawdown = Math.max(this.metrics.maxDrawdown, this.metrics.currentDrawdown);
     
-    // CRITIQUE: Arrêt si drawdown maximum atteint
     if (this.metrics.currentDrawdown > config.maxDrawdown) {
       console.log(`🚨 DRAWDOWN MAXIMUM ATTEINT: ${this.metrics.currentDrawdown.toFixed(2)}%`);
       console.log(`🛑 ARRÊT AUTOMATIQUE DU BOT POUR PROTECTION`);
@@ -253,13 +246,11 @@ class IchimokuBot {
   async executeVirtualTrade(symbol, signal, price, atrValue = 0) {
     const asset = symbol.split('/')[0];
     
-    // AMÉLIORATION: Validation prix stricte
     if (!(await this.validatePrice(symbol, price))) {
       return;
     }
 
     if (signal.buy) {
-      // AMÉLIORATION: Contrôle nombre de positions
       if (this.entryPrices[asset] || !this.canOpenNewPosition()) {
         if (!this.canOpenNewPosition()) {
           console.log(`⚠️ Maximum de positions atteint (${config.maxPositions}), pas d'achat ${symbol}`);
@@ -306,7 +297,6 @@ class IchimokuBot {
       this.portfolio.USDT += sellValue;
       this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
       
-      // Mise à jour métriques
       if (entry) {
         const pnl = sellValue - (entry.qty * entry.price);
         if (pnl > 0) {
@@ -507,8 +497,6 @@ class IchimokuBot {
 
   getTotalValue() {
     let total = this.portfolio.USDT;
-    // Note: En réalité, il faudrait calculer la valeur des autres actifs
-    // Ici on simplifie car les positions sont vendues rapidement
     return total;
   }
 
@@ -540,9 +528,8 @@ class IchimokuBot {
       
       this.displayPortfolio();
       
-      // CRITIQUE: Vérifier drawdown avant de continuer
       if (!this.updateDrawdown()) {
-        return; // Bot arrêté automatiquement
+        return;
       }
       
       const errorCount = Object.keys(this.lastAnalysisErrors).length;
@@ -573,7 +560,6 @@ class IchimokuBot {
           console.log(`❌ ${symbol}: ${error.message}`);
         }
         
-        // Délai plus long entre symboles
         if (i < config.symbols.length - 1) {
           await this.delay(1500);
         }
@@ -618,10 +604,8 @@ class IchimokuBot {
       console.log('⚠️ Vérifiez vos clés API\n');
     }
     
-    // Premier cycle
     await this.runCycle();
     
-    // Cycles réguliers
     while (this.isRunning) {
       try {
         const nextCycle = new Date(Date.now() + config.cycleInterval);
@@ -665,7 +649,120 @@ class IchimokuBot {
   }
 }
 
-// Serveur Express et démarrage
+// Fonctions helper pour l'interface
+function generatePortfolioSection(status) {
+  const totalAssets = Object.entries(status.portfolio)
+    .filter(([asset, amount]) => asset !== 'history' && amount > 0).length;
+    
+  return `
+    <div class="card">
+      <h2>💼 Portfolio Détaillé</h2>
+      <div style="background: #e8f5e8; padding: 15px; border-radius: 8px; margin: 15px 0;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; text-align: center;">
+          <div>
+            <div class="metric-value" style="color: #4CAF50;">$${status.totalValue.toFixed(2)}</div>
+            <div class="metric-label">Valeur Totale</div>
+          </div>
+          <div>
+            <div class="metric-value" style="color: #2196F3;">${totalAssets}</div>
+            <div class="metric-label">Actifs Détenus</div>
+          </div>
+          <div>
+            <div class="metric-value" style="color: #ff9800;">${status.metrics?.currentDrawdown?.toFixed(2) || '0.00'}%</div>
+            <div class="metric-label">Drawdown Actuel</div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="portfolio-grid">
+        ${Object.entries(status.portfolio)
+          .filter(([asset]) => asset !== 'history')
+          .map(([asset, amount]) => {
+            const isZero = amount === 0;
+            return `
+              <div class="asset-card ${isZero ? 'zero' : ''}">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <div>
+                    <div style="font-weight: bold; font-size: 1.1em;">${asset}</div>
+                    <div class="asset-amount">${amount.toFixed(6)}</div>
+                  </div>
+                  <div style="text-align: right;">
+                    ${asset === 'USDT' ? 
+                      `<div class="asset-value">$${amount.toFixed(2)}</div>` :
+                      `<div style="color: #666; font-size: 0.9em;">${isZero ? 'Aucune position' : 'Position active'}</div>`
+                    }
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function generateMetricsSection(status) {
+  const metrics = status.metrics || {};
+  const winRate = metrics.totalTrades > 0 ? 
+    (metrics.winningTrades / metrics.totalTrades * 100).toFixed(1) : '0.0';
+    
+  return `
+    <div class="card">
+      <h2>📊 Métriques de Performance</h2>
+      <div class="metrics">
+        <div class="metric-card">
+          <div class="metric-value">${metrics.totalTrades || 0}</div>
+          <div class="metric-label">Total Trades</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color: #4CAF50;">${metrics.winningTrades || 0}</div>
+          <div class="metric-label">Trades Gagnants</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color: #f44336;">${metrics.losingTrades || 0}</div>
+          <div class="metric-label">Trades Perdants</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color: #2196F3;">${winRate}%</div>
+          <div class="metric-label">Win Rate</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-value" style="color: #ff9800;">${metrics.maxDrawdown?.toFixed(2) || '0.00'}%</div>
+          <div class="metric-label">Max Drawdown</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function generatePositionsSection(status) {
+  return `
+    <div class="card">
+      <h2>📈 Positions Ouvertes</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px;">
+        <div style="background: #e3f2fd; padding: 15px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 1.5em; font-weight: bold; color: #4CAF50;">${status.openPositions}</div>
+          <div style="color: #666;">Positions LONG</div>
+        </div>
+        <div style="background: #fff3e0; padding: 15px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 1.5em; font-weight: bold; color: #ff9800;">${status.shortPositions}</div>
+          <div style="color: #666;">Positions SHORT</div>
+        </div>
+        <div style="background: #f3e5f5; padding: 15px; border-radius: 8px; text-align: center;">
+          <div style="font-size: 1.5em; font-weight: bold; color: #9c27b0;">${status.config?.maxPositions || 3}</div>
+          <div style="color: #666;">Maximum Autorisé</div>
+        </div>
+      </div>
+      
+      ${status.openPositions === 0 && status.shortPositions === 0 ? 
+        '<p style="text-align: center; color: #666; margin-top: 20px;">🔍 Aucune position ouverte - Le bot recherche des opportunités...</p>' :
+        '<p style="text-align: center; color: #4CAF50; margin-top: 20px;">✅ Positions actives - Le bot gère vos trades automatiquement</p>'
+      }
+    </div>
+  `;
+}
+
+// Serveur Express
 async function main() {
   const bot = new IchimokuBot();
   
@@ -697,7 +794,6 @@ async function main() {
     res.json({ message: 'Redémarrage en cours...' });
   });
 
-  // Route transactions
   app.get('/transactions', (req, res) => {
     try {
       if (!fs.existsSync('transactions.log')) {
@@ -732,7 +828,7 @@ async function main() {
     }
   });
 
-  // Interface web transactions
+  // Interface web transactions AMÉLIORÉE
   app.get('/transactions/view', (req, res) => {
     try {
       const status = bot.getStatus();
@@ -740,18 +836,26 @@ async function main() {
       if (!fs.existsSync('transactions.log')) {
         return res.send(`
           <html>
-            <head><title>Bot Sécurisé - Aucune Transaction</title></head>
-            <body style="font-family: Arial; padding: 20px;">
-              <h1>🤖 Bot Ichimoku Sécurisé</h1>
-              <p>Aucune transaction trouvée</p>
+            <head>
+              <title>Bot Sécurisé - Portfolio Détaillé</title>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            </head>
+            <body style="font-family: Arial; padding: 20px; background: #f5f5f5;">
+              <h1>🤖 Bot Ichimoku Sécurisé - Portfolio</h1>
+              <div style="background: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107;">
+                <h3>⚠️ Aucune transaction trouvée</h3>
+                <p>Le bot n'a pas encore effectué de trades.</p>
+              </div>
+              ${generatePortfolioSection(status)}
               <div style="background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 20px 0;">
                 <h3>⚙️ Configuration Sécurisée</h3>
-                <p><strong>Risk par trade:</strong> ${status.config.riskPercentage}%</p>
-                <p><strong>Max positions:</strong> ${status.config.maxPositions}</p>
-                <p><strong>Max drawdown:</strong> ${status.config.maxDrawdown}%</p>
-                <p><strong>Cycle:</strong> ${status.config.cycleInterval / 1000 / 60} minutes</p>
+                <p><strong>Risk par trade:</strong> ${status.config?.riskPercentage || 2}%</p>
+                <p><strong>Max positions:</strong> ${status.config?.maxPositions || 3}</p>
+                <p><strong>Max drawdown:</strong> ${status.config?.maxDrawdown || 20}%</p>
+                <p><strong>Cycle:</strong> ${(status.config?.cycleInterval || 300000) / 1000 / 60} minutes</p>
               </div>
-              <a href="/status">📈 Voir statut</a>
+              <p><a href="/status" style="color: #2196F3;">📈 Voir statut JSON</a></p>
             </body>
           </html>
         `);
@@ -769,61 +873,185 @@ async function main() {
           }
         })
         .filter(t => t !== null)
-        .slice(-50)
+        .slice(-30)
         .reverse();
 
       const html = `
         <html>
           <head>
-            <title>Bot Sécurisé - Transactions</title>
+            <title>Bot Sécurisé - Portfolio & Transactions</title>
             <meta http-equiv="refresh" content="30">
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
-              body { font-family: Arial; margin: 20px; background: #f5f5f5; }
-              .header { background: #2196F3; color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-              .security-info { background: #e8f5e8; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #4CAF50; }
-              .transaction { background: white; padding: 10px; margin: 5px 0; border-radius: 5px; border-left: 4px solid #4CAF50; }
+              body { 
+                font-family: 'Segoe UI', Arial, sans-serif; 
+                margin: 0; 
+                padding: 20px; 
+                background: #f8f9fa; 
+                color: #333;
+              }
+              .container { max-width: 1200px; margin: 0 auto; }
+              .header { 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                color: white; 
+                padding: 20px; 
+                border-radius: 10px; 
+                margin-bottom: 20px; 
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+              }
+              .card { 
+                background: white; 
+                padding: 20px; 
+                margin: 15px 0; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                border-left: 5px solid #2196F3;
+              }
+              .portfolio-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                gap: 20px;
+                margin: 20px 0;
+              }
+              .asset-card {
+                background: white;
+                padding: 15px;
+                border-radius: 8px;
+                border-left: 4px solid #4CAF50;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+              }
+              .asset-card.zero { border-left-color: #ccc; opacity: 0.6; }
+              .asset-amount {
+                font-size: 1.2em;
+                font-weight: bold;
+                color: #2196F3;
+              }
+              .asset-value {
+                color: #4CAF50;
+                font-weight: bold;
+              }
+              .transaction { 
+                background: white; 
+                padding: 15px; 
+                margin: 8px 0; 
+                border-radius: 8px; 
+                border-left: 4px solid #4CAF50;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+              }
               .buy { border-left-color: #4CAF50; }
               .sell { border-left-color: #f44336; }
               .short { border-left-color: #ff9800; }
               .cover, .cover1, .cover2, .cover_sl { border-left-color: #9c27b0; }
               .tp1, .tp2 { border-left-color: #00bcd4; }
-              .timestamp { color: #666; font-size: 0.8em; }
-              .amount { font-weight: bold; }
+              .timestamp { 
+                color: #666; 
+                font-size: 0.85em; 
+                margin-bottom: 5px;
+              }
+              .trade-info {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+                margin: 10px 0;
+              }
+              .metrics {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin: 20px 0;
+              }
+              .metric-card {
+                background: white;
+                padding: 15px;
+                border-radius: 8px;
+                text-align: center;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+              }
+              .metric-value {
+                font-size: 1.8em;
+                font-weight: bold;
+                color: #2196F3;
+              }
+              .metric-label {
+                color: #666;
+                font-size: 0.9em;
+                margin-top: 5px;
+              }
+              .status-running { color: #4CAF50; }
+              .status-stopped { color: #f44336; }
+              .nav {
+                display: flex;
+                gap: 15px;
+                flex-wrap: wrap;
+                margin-top: 10px;
+              }
+              .nav a {
+                color: white;
+                text-decoration: none;
+                background: rgba(255,255,255,0.2);
+                padding: 8px 15px;
+                border-radius: 5px;
+                transition: background 0.3s;
+              }
+              .nav a:hover {
+                background: rgba(255,255,255,0.3);
+              }
+              @media (max-width: 768px) {
+                .trade-info { grid-template-columns: 1fr; }
+                .portfolio-grid { grid-template-columns: 1fr; }
+                .metrics { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+              }
             </style>
           </head>
           <body>
-            <div class="header">
-              <h1>🛡️ Bot Ichimoku Sécurisé - Transactions</h1>
-              <p>Dernière MAJ: ${new Date().toLocaleString()}</p>
-              <p>Total: ${transactions.length} transactions | <a href="/status" style="color: white;">📈 Statut</a></p>
-            </div>
-            
-            <div class="security-info">
-              <h3>⚙️ Configuration Sécurisée Active</h3>
-              <p><strong>✅ Risk par trade:</strong> ${status.config.riskPercentage}% (au lieu de 25%)</p>
-              <p><strong>✅ Max positions:</strong> ${status.config.maxPositions} simultanées</p>
-              <p><strong>✅ Protection drawdown:</strong> Arrêt auto à ${status.config.maxDrawdown}%</p>
-              <p><strong>✅ Cycle trading:</strong> ${status.config.cycleInterval / 1000 / 60} minutes (au lieu de 30s)</p>
-              <p><strong>📊 Drawdown actuel:</strong> ${status.metrics.currentDrawdown.toFixed(2)}%</p>
-            </div>
-            
-            ${transactions.length === 0 ? '<p>Aucune transaction</p>' : ''}
-            
-            ${transactions.map(t => `
-              <div class="transaction ${t.type.toLowerCase()}">
-                <div class="timestamp">${new Date(t.timestamp).toLocaleString()}</div>
-                <div><strong>${t.symbol}</strong> - ${t.type}</div>
-                <div class="amount">Quantité: ${t.amount} @ ${t.price} USDT</div>
-                <div style="margin-top: 10px; font-size: 0.9em;">
-                  💰 USDT: ${parseFloat(t.portfolio.USDT).toFixed(2)}
-                  ${t.totalValue ? ` | 📈 Total: $${t.totalValue.toFixed(2)}` : ''}
-                  ${t.drawdown ? ` | 📉 DD: ${t.drawdown.toFixed(2)}%` : ''}
+            <div class="container">
+              <div class="header">
+                <h1>🤖 Bot Ichimoku - Portfolio & Transactions Live</h1>
+                <p><strong>Dernière mise à jour:</strong> ${new Date().toLocaleString()}</p>
+                <p><strong>État:</strong> <span class="${status.isRunning ? 'status-running' : 'status-stopped'}">${status.isRunning ? '🟢 Actif' : '🔴 Arrêté'}</span> | <strong>Cycle:</strong> ${status.cycleCount}</p>
+                <div class="nav">
+                  <a href="/">🏠 Accueil</a>
+                  <a href="/status">📊 JSON</a>
+                  <a href="/transactions/download">💾 Télécharger</a>
+                  <a href="/transactions/view">🔄 Actualiser</a>
                 </div>
               </div>
-            `).join('')}
-            
-            <div style="background: #e3f2fd; padding: 15px; border-radius: 5px; margin-top: 20px;">
-              <p><em>🔄 Auto-refresh 30s | ⚡ Toutes les corrections critiques appliquées</em></p>
+
+              ${generatePortfolioSection(status)}
+              ${generateMetricsSection(status)}
+              ${generatePositionsSection(status)}
+              
+              <div class="card">
+                <h2>📈 Historique des Transactions (${transactions.length} dernières)</h2>
+                ${transactions.length === 0 ? '<p style="text-align: center; color: #666;">Aucune transaction</p>' : ''}
+                
+                ${transactions.map(t => `
+                  <div class="transaction ${t.type.toLowerCase()}">
+                    <div class="timestamp">${new Date(t.timestamp).toLocaleString()}</div>
+                    <div class="trade-info">
+                      <div>
+                        <strong>${t.symbol}</strong> - <span style="font-weight: bold;">${t.type}</span><br>
+                        <span style="color: #666;">Quantité: ${parseFloat(t.amount).toFixed(6)}</span><br>
+                        <span style="color: #666;">Prix: ${parseFloat(t.price).toFixed(6)} USDT</span>
+                      </div>
+                      <div>
+                        <strong>Portfolio après trade:</strong><br>
+                        <span style="color: #4CAF50;">💰 USDT: ${parseFloat(t.portfolio.USDT).toFixed(2)}</span><br>
+                        ${t.totalValue ? `<span style="color: #2196F3;">📊 Total: $${parseFloat(t.totalValue).toFixed(2)}</span><br>` : ''}
+                        ${t.drawdown ? `<span style="color: #ff9800;">📉 Drawdown: ${parseFloat(t.drawdown).toFixed(2)}%</span>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                `).join('')}
+              </div>
+              
+              <div class="card">
+                <p style="text-align: center; color: #666;">
+                  🔄 <strong>Auto-refresh toutes les 30 secondes</strong><br>
+                  <small>Bot version: Ichimoku Sécurisé v2.0 | Risk: ${status.config?.riskPercentage || 2}% | Max positions: ${status.config?.maxPositions || 3}</small>
+                </p>
+              </div>
             </div>
           </body>
         </html>
@@ -835,13 +1063,46 @@ async function main() {
     }
   });
 
-  // Dashboard principal
+  app.get('/transactions/download', (req, res) => {
+    try {
+      if (!fs.existsSync('transactions.log')) {
+        return res.status(404).json({ error: 'Fichier non trouvé' });
+      }
+      
+      res.download('transactions.log', 'transactions.log', (err) => {
+        if (err) {
+          res.status(500).json({ error: 'Erreur téléchargement: ' + err.message });
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Erreur: ' + error.message });
+    }
+  });
+
+  app.get('/logs', (req, res) => {
+    const logs = [];
+    
+    if (fs.existsSync('transactions.log')) {
+      const transactionLogs = fs.readFileSync('transactions.log', 'utf8')
+        .split('\n')
+        .filter(line => line.trim())
+        .slice(-20);
+      logs.push(...transactionLogs);
+    }
+    
+    res.json({
+      logs: logs,
+      count: logs.length,
+      lastUpdate: new Date().toISOString()
+    });
+  });
+
   app.get('/', (req, res) => {
     const status = bot.getStatus();
     const html = `
       <html>
         <head>
-          <title>Bot Ichimoku Sécurisé</title>
+          <title>Ichimoku Trading Bot Sécurisé</title>
           <meta http-equiv="refresh" content="60">
           <style>
             body { font-family: Arial; margin: 20px; background: #f0f0f0; }
@@ -850,80 +1111,50 @@ async function main() {
             .status-stopped { color: #f44336; }
             .nav { background: #2196F3; color: white; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
             .nav a { color: white; text-decoration: none; margin: 0 15px; }
-            .security { background: #e8f5e8; padding: 15px; border-radius: 5px; border-left: 4px solid #4CAF50; }
-            .warning { background: #fff3cd; padding: 15px; border-radius: 5px; border-left: 4px solid #ffc107; }
-            .danger { background: #f8d7da; padding: 15px; border-radius: 5px; border-left: 4px solid #dc3545; }
+            .security-banner { background: #e8f5e8; padding: 15px; border-radius: 5px; border-left: 4px solid #4CAF50; margin: 20px 0; }
           </style>
         </head>
         <body>
           <div class="nav">
-            <h1>🛡️ Bot Ichimoku Sécurisé</h1>
+            <h1>🤖 Bot Ichimoku Sécurisé</h1>
             <nav>
-              <a href="/">🏠 Dashboard</a>
-              <a href="/transactions/view">📊 Transactions</a>
-              <a href="/status">📈 JSON</a>
+              <a href="/">🏠 Accueil</a>
+              <a href="/transactions/view">📊 Portfolio Détaillé</a>
+              <a href="/status">📈 Statut JSON</a>
+              <a href="/transactions/download">💾 Télécharger logs</a>
             </nav>
           </div>
           
-          <div class="card security">
-            <h2>✅ Configuration Sécurisée Active</h2>
-            <p><strong>Risk Management:</strong> ${status.config.riskPercentage}% par trade (au lieu de 25%)</p>
-            <p><strong>Position Limit:</strong> Max ${status.config.maxPositions} positions simultanées</p>
-            <p><strong>Protection Drawdown:</strong> Arrêt automatique à ${status.config.maxDrawdown}%</p>
-            <p><strong>Fréquence Trading:</strong> Cycle ${status.config.cycleInterval / 1000 / 60} minutes (au lieu de 30s)</p>
+          <div class="security-banner">
+            <h3>✅ Mode Sécurisé Activé</h3>
+            <p><strong>Risk par trade:</strong> ${status.config?.riskPercentage || 2}% (au lieu de 25%)</p>
+            <p><strong>Max positions:</strong> ${status.config?.maxPositions || 3} simultanées</p>
+            <p><strong>Protection drawdown:</strong> ${status.config?.maxDrawdown || 20}% maximum</p>
+            <p><strong>Cycle trading:</strong> ${(status.config?.cycleInterval || 300000) / 1000 / 60} minutes (au lieu de 30s)</p>
           </div>
           
           <div class="card">
-            <h2>📊 Statut Bot</h2>
+            <h2>📊 Statut du Bot</h2>
             <p><strong>État:</strong> <span class="${status.isRunning ? 'status-running' : 'status-stopped'}">${status.isRunning ? '🟢 Actif' : '🔴 Arrêté'}</span></p>
             <p><strong>Cycles:</strong> ${status.cycleCount}</p>
             <p><strong>Valeur portefeuille:</strong> $${status.totalValue.toFixed(2)}</p>
-            <p><strong>Positions:</strong> ${status.openPositions} LONG, ${status.shortPositions} SHORT / ${status.config.maxPositions} max</p>
-            <p><strong>Dernière MAJ:</strong> ${new Date().toLocaleString()}</p>
+            <p><strong>Positions ouvertes:</strong> ${status.openPositions} LONG, ${status.shortPositions} SHORT</p>
+            <p><strong>Symboles surveillés:</strong> ${status.symbols.length}</p>
+            <p><strong>Dernière maj:</strong> ${new Date().toLocaleString()}</p>
           </div>
           
-          ${status.metrics.currentDrawdown > 15 ? `
-          <div class="card warning">
-            <h2>⚠️ Attention Drawdown</h2>
-            <p><strong>Drawdown actuel:</strong> ${status.metrics.currentDrawdown.toFixed(2)}%</p>
-            <p><strong>Drawdown maximum:</strong> ${status.metrics.maxDrawdown.toFixed(2)}%</p>
-            <p><em>Le bot s'arrêtera automatiquement à ${status.config.maxDrawdown}%</em></p>
-          </div>
-          ` : `
           <div class="card">
             <h2>📈 Performance</h2>
-            <p><strong>Drawdown actuel:</strong> ${status.metrics.currentDrawdown.toFixed(2)}%</p>
-            <p><strong>Drawdown maximum:</strong> ${status.metrics.maxDrawdown.toFixed(2)}%</p>
-            ${status.metrics.totalTrades > 0 ? `
-            <p><strong>Total trades:</strong> ${status.metrics.totalTrades}</p>
-            <p><strong>Win rate:</strong> ${(status.metrics.winningTrades / status.metrics.totalTrades * 100).toFixed(1)}%</p>
-            ` : ''}
-          </div>
-          `}
-          
-          <div class="card">
-            <h2>💼 Portefeuille</h2>
-            <p><strong>USDT:</strong> ${status.portfolio.USDT.toFixed(2)}</p>
-            ${Object.entries(status.portfolio)
-              .filter(([asset, amount]) => asset !== 'USDT' && asset !== 'history' && amount > 0)
-              .map(([asset, amount]) => `<p><strong>${asset}:</strong> ${amount.toFixed(6)}</p>`)
-              .join('') || '<p><em>Aucune autre position</em></p>'}
+            <p><strong>Total trades:</strong> ${status.metrics?.totalTrades || 0}</p>
+            <p><strong>Trades gagnants:</strong> ${status.metrics?.winningTrades || 0}</p>
+            <p><strong>Win rate:</strong> ${status.metrics?.totalTrades > 0 ? (status.metrics.winningTrades / status.metrics.totalTrades * 100).toFixed(1) : '0.0'}%</p>
+            <p><strong>Drawdown actuel:</strong> ${status.metrics?.currentDrawdown?.toFixed(2) || '0.00'}%</p>
+            <p><strong>Max drawdown:</strong> ${status.metrics?.maxDrawdown?.toFixed(2) || '0.00'}%</p>
           </div>
           
           <div class="card">
-            <h2>🔧 Actions</h2>
-            <button onclick="fetch('/stop', {method: 'POST'}).then(r => r.json()).then(d => alert(d.message))" 
-                    style="background: #f44336; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">
-              🛑 Arrêter Bot
-            </button>
-            <button onclick="fetch('/restart', {method: 'POST'}).then(r => r.json()).then(d => alert(d.message))" 
-                    style="background: #ff9800; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px;">
-              🔄 Redémarrer Bot
-            </button>
-          </div>
-          
-          <div class="card">
-            <p><em>🔄 Mise à jour auto 60s | Version sécurisée avec toutes les corrections critiques</em></p>
+            <p><em>🔄 Page mise à jour automatiquement toutes les 60 secondes</em></p>
+            <p><small>Bot version: Ichimoku Sécurisé v2.0</small></p>
           </div>
         </body>
       </html>
@@ -933,17 +1164,17 @@ async function main() {
   
   const PORT = process.env.PORT || 8080;
   app.listen(PORT, () => {
-    console.log(`🌐 Serveur sur port ${PORT}`);
+    console.log(`🌐 Serveur Express démarré sur le port ${PORT}`);
   });
   
   process.on('SIGINT', () => {
-    console.log('\n🛑 SIGINT - Arrêt...');
+    console.log('\n🛑 Signal SIGINT reçu, arrêt du bot...');
     bot.stop();
     process.exit(0);
   });
   
   process.on('SIGTERM', () => {
-    console.log('\n🛑 SIGTERM - Arrêt...');
+    console.log('\n🛑 Signal SIGTERM reçu, arrêt du bot...');
     bot.stop();
     process.exit(0);
   });
@@ -951,7 +1182,7 @@ async function main() {
   try {
     await bot.start();
   } catch (error) {
-    console.error('❌ Erreur démarrage:', error);
+    console.error('❌ Erreur lors du démarrage du bot:', error);
     process.exit(1);
   }
 }
