@@ -296,7 +296,6 @@ class IchimokuBot {
       const sellValue = this.portfolio[asset] * price * 0.999;
       
       this.portfolio.USDT += sellValue;
-      this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
       
       if (entry) {
         const pnl = sellValue - (entry.qty * entry.price);
@@ -306,6 +305,8 @@ class IchimokuBot {
         } else {
           this.metrics.losingTrades++;
         }
+      } else {
+        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
       }
       
       this.portfolio[asset] = 0;
@@ -779,28 +780,200 @@ function generatePositionsSection(status) {
   return section;
 }
 
+// SERVEUR EXPRESS POUR INTERFACE WEB
+const app = express();
+app.use(express.json());
+app.use(express.static('public'));
+
+let bot = null;
+
+// Route pour visualiser les transactions
+app.get('/transactions/view', (req, res) => {
+  try {
+    let transactions = [];
+    
+    if (bot) {
+      transactions = bot.getTransactions();
+    } else {
+      // Lire directement depuis le fichier si le bot n'est pas initialisé
+      if (fs.existsSync('transactions.log')) {
+        const logContent = fs.readFileSync('transactions.log', 'utf8');
+        transactions = logContent
+          .split('\n')
+          .filter(line => line.trim())
+          .map(line => {
+            try {
+              return JSON.parse(line);
+            } catch {
+              return null;
+            }
+          })
+          .filter(t => t !== null)
+          .slice(-100)
+          .reverse();
+      }
+    }
+
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Transactions Bot Ichimoku</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; background: #1a1a1a; color: #fff; }
+            h1 { color: #4CAF50; text-align: center; }
+            .summary { background: #2d2d2d; padding: 15px; margin: 20px 0; border-radius: 8px; }
+            .transaction { background: #333; margin: 10px 0; padding: 15px; border-radius: 8px; border-left: 4px solid #4CAF50; }
+            .transaction.loss { border-left-color: #f44336; }
+            .profit { color: #4CAF50; font-weight: bold; }
+            .loss { color: #f44336; font-weight: bold; }
+            .symbol { font-weight: bold; color: #2196F3; }
+            .type { padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+            .type.BUY { background: #4CAF50; }
+            .type.SELL { background: #f44336; }
+            .type.SHORT { background: #ff9800; }
+            .type.COVER1, .type.COVER2 { background: #9c27b0; }
+            .type.TP1, .type.TP2 { background: #4CAF50; }
+            .timestamp { color: #888; font-size: 12px; }
+            .positions { background: #2d2d2d; padding: 15px; margin: 20px 0; border-radius: 8px; }
+            .position { background: #444; margin: 5px 0; padding: 10px; border-radius: 4px; }
+            .position.long { border-left: 3px solid #4CAF50; }
+            .position.short { border-left: 3px solid #ff9800; }
+        </style>
+    </head>
+    <body>
+        <h1>🤖 Bot Ichimoku - Transactions & Positions</h1>
+        
+        ${bot ? `
+        <div class="summary">
+            <h2>📊 Statut du Bot</h2>
+            <p><strong>État:</strong> ${bot.getStatus().isRunning ? '🟢 Actif' : '🔴 Arrêté'}</p>
+            <p><strong>Cycles:</strong> ${bot.getStatus().cycleCount}</p>
+            <p><strong>Capital:</strong> ${bot.getStatus().totalValue.toFixed(2)} USDT</p>
+            <p><strong>Positions actives:</strong> ${bot.getStatus().activePositions}</p>
+        </div>
+
+        <div class="positions">
+            <h2>🎯 Positions Actives</h2>
+            ${bot.getPositions().length > 0 ? 
+              bot.getPositions().map(pos => `
+                <div class="position ${pos.type.toLowerCase()}">
+                    <strong>${pos.symbol}</strong> - ${pos.type} 
+                    <span class="type ${pos.type}">${pos.type}</span><br>
+                    Prix d'entrée: ${pos.entryPrice.toFixed(6)} | 
+                    Prix actuel: ${pos.currentPrice.toFixed(6)} | 
+                    Quantité: ${pos.quantity.toFixed(6)}<br>
+                    PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span>
+                </div>
+              `).join('') 
+              : '<p>Aucune position active</p>'
+            }
+        </div>
+        ` : ''}
+        
+        <div class="summary">
+            <h2>📈 Historique des Transactions (${transactions.length})</h2>
+            ${transactions.length === 0 ? '<p>Aucune transaction trouvée</p>' : ''}
+        </div>
+        
+        ${transactions.map(tx => `
+            <div class="transaction ${tx.pnl && tx.pnl < 0 ? 'loss' : ''}">
+                <div class="timestamp">${new Date(tx.timestamp).toLocaleString('fr-FR')}</div>
+                <div>
+                    <span class="symbol">${tx.symbol}</span> 
+                    <span class="type ${tx.type}">${tx.type}</span>
+                    ${tx.amount} @ ${tx.price} USDT
+                    ${tx.pnl !== null ? `<span class="${tx.pnl >= 0 ? 'profit' : 'loss'}"> | PnL: ${tx.pnl.toFixed(2)} USDT</span>` : ''}
+                </div>
+                <div style="font-size: 12px; color: #888;">
+                    Valeur: ${(tx.amount * tx.price).toFixed(2)} USDT | 
+                    Total Portfolio: ${tx.totalValue ? tx.totalValue.toFixed(2) : 'N/A'} USDT
+                </div>
+            </div>
+        `).join('')}
+        
+        <script>
+            setTimeout(() => location.reload(), 30000); // Auto-refresh every 30s
+        </script>
+    </body>
+    </html>
+    `;
+    
+    res.send(html);
+  } catch (error) {
+    res.status(500).send(`Erreur: ${error.message}`);
+  }
+});
+
+// API endpoints
+app.get('/api/status', (req, res) => {
+  if (!bot) return res.json({ isRunning: false });
+  res.json(bot.getStatus());
+});
+
+app.get('/api/positions', (req, res) => {
+  if (!bot) return res.json([]);
+  res.json(bot.getPositions());
+});
+
+app.get('/api/transactions', (req, res) => {
+  if (!bot) return res.json([]);
+  res.json(bot.getTransactions());
+});
+
+app.post('/api/start', async (req, res) => {
+  try {
+    if (bot && bot.isRunning) {
+      return res.json({ error: 'Bot déjà en cours' });
+    }
+    
+    bot = new IchimokuBot();
+    await bot.start();
+    res.json({ success: true, message: 'Bot démarré' });
+  } catch (error) {
+    res.json({ error: error.message });
+  }
+});
+
+app.post('/api/stop', (req, res) => {
+  if (bot) {
+    bot.stop();
+    res.json({ success: true, message: 'Bot arrêté' });
+  } else {
+    res.json({ error: 'Aucun bot en cours' });
+  }
+});
+
 async function main() {
-  const bot = new IchimokuBot();
+  bot = new IchimokuBot();
+  
+  // Démarrer le serveur web
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 Serveur web démarré sur le port ${PORT}`);
+    console.log(`📊 Interface: http://localhost:${PORT}/transactions/view`);
+  });
   
   process.on('SIGINT', () => {
     console.log('\n🛑 Arrêt demandé...');
-    bot.stop();
+    if (bot) bot.stop();
     process.exit(0);
   });
 
   process.on('uncaughtException', (error) => {
     console.error('❌ Erreur non capturée:', error);
-    bot.stop();
+    if (bot) bot.stop();
     process.exit(1);
   });
 
   process.on('unhandledRejection', (reason, promise) => {
     console.error('❌ Promise rejetée non gérée:', reason);
-    bot.stop();
+    if (bot) bot.stop();
     process.exit(1);
   });
   
   try {
+    console.log('🚀 Démarrage automatique du bot...');
     await bot.start();
   } catch (error) {
     console.error('❌ Erreur fatale:', error);
