@@ -17,7 +17,7 @@ module.exports = {
     endDate: '2024-01-01'
   },
   riskPercentage: 2, // 2% au lieu de 25% (CRITIQUE)
-  maxPositions: 3,   // Maximum 3 positions simultanées (CRITIQUE)
+  maxPositions: 10,   // Maximum 3 positions simultanées (CRITIQUE)
   maxDrawdown: 20,   // Arrêt si perte 20% (CRITIQUE)
   dynamicSizing: {
     atrThreshold: 50,
