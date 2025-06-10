@@ -1,7 +1,7 @@
 module.exports = {
   mode: 'live',
   initialCapital: 1000,
-  cycleInterval: 300000, // 5 minutes au lieu de 30s (CRITIQUE)
+  cycleInterval: 300000, // 5 minutes
   exchange: 'binance',
   symbols: [
     'BTC/USDT', 'ETH/USDT',
@@ -16,9 +16,9 @@ module.exports = {
     startDate: '2020-01-01',
     endDate: '2024-01-01'
   },
-  riskPercentage: 2, // 2% au lieu de 25% (CRITIQUE)
-  maxPositions: 10,   // Maximum 3 positions simultanées (CRITIQUE)
-  maxDrawdown: 20,   // Arrêt si perte 20% (CRITIQUE)
+  riskPercentage: 2,
+  maxPositions: 10,
+  maxDrawdown: 20,
   dynamicSizing: {
     atrThreshold: 50,
     riskReduction: 0.5
@@ -51,13 +51,17 @@ module.exports = {
     adxThreshold: 25
   },
   apiSettings: {
-    rateLimit: 1200, // Plus restrictif (IMPORTANT)
+    rateLimit: 1200,
     enableRateLimit: true,
-    retryAttempts: 3, // Retry automatique (IMPORTANT)
-    retryDelay: 2000  // 2s entre retries (IMPORTANT)
+    retryAttempts: 3,
+    retryDelay: 2000
   },
   priceValidation: {
-    maxSpreadPercent: 0.2, // 0.2% au lieu de 0.5% (IMPORTANT)
-    minVolume: 1000        // Volume minimum (IMPORTANT)
+    maxSpreadPercent: 0.2,
+    minVolume: 1000
+  },
+  combinedSignal: {
+    confidenceThreshold: 0.7,
+    riskMultiplier: 2
   }
 };

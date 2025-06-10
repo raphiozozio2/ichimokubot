@@ -206,6 +206,19 @@ class IchimokuBot {
     }
   }
 
+  // --- AJOUT BoS ---
+  simulateBreakOfStructureSignal(ohlcv, price) {
+    if (!ohlcv || ohlcv.length < 20) return { buy: false, sell: false, confidence: 0 };
+    const recentHighs = ohlcv.slice(-10).map(c => c[2]);
+    const recentLows = ohlcv.slice(-10).map(c => c[3]);
+    const maxHigh = Math.max(...recentHighs);
+    const minLow = Math.min(...recentLows);
+    const breakoutUp = price > maxHigh;
+    const breakoutDown = price < minLow;
+    const confidence = breakoutUp || breakoutDown ? 0.8 : 0.3;
+    return { buy: breakoutUp, sell: breakoutDown, confidence };
+  }
+
   canOpenNewPosition() {
     const currentPositions = Object.keys(this.entryPrices).length + Object.keys(this.shorts).length;
     return currentPositions < config.maxPositions;
@@ -244,12 +257,16 @@ class IchimokuBot {
     return config.riskPercentage;
   }
 
-  async executeVirtualTrade(symbol, signal, price, atrValue = 0) {
+  // --- AJOUT gestion stratégie dans executeVirtualTrade ---
+  async executeVirtualTrade(symbol, signal, price, atrValue = 0, customRisk = null) {
     const asset = symbol.split('/')[0];
     
     if (!(await this.validatePrice(symbol, price))) {
       return;
     }
+
+    // Ajout du champ strategyTag pour la stratégie utilisée
+    const strategy = signal.strategyTag || signal.strategy || 'Ichimoku';
 
     if (signal.buy) {
       if (this.entryPrices[asset] || !this.canOpenNewPosition()) {
@@ -259,7 +276,7 @@ class IchimokuBot {
         return;
       }
       
-      const dynamicRisk = this.getDynamicRisk(atrValue);
+      const dynamicRisk = customRisk !== null ? customRisk : this.getDynamicRisk(atrValue);
       const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
       const amount = maxAmount / price;
       
@@ -285,12 +302,13 @@ class IchimokuBot {
           highest: price,
           qty: amount,
           tp1Done: false,
-          entryTime: new Date()
+          entryTime: new Date(),
+          strategy // <-- AJOUT
         };
         
         this.metrics.totalTrades++;
-        this.logTransaction(symbol, 'BUY', amount, price);
-        console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | SL: ${stopLoss.toFixed(6)} | TP1: ${tp1.toFixed(6)} | TP2: ${tp2.toFixed(6)}`);
+        this.logTransaction(symbol, 'BUY', amount, price, null, strategy); // <-- AJOUT
+        console.log(`[ENTRÉE] ${symbol} @ ${price.toFixed(6)} | SL: ${stopLoss.toFixed(6)} | TP1: ${tp1.toFixed(6)} | TP2: ${tp2.toFixed(6)} | Strat: ${strategy}`);
       }
     }
 
@@ -302,14 +320,14 @@ class IchimokuBot {
       
       if (entry) {
         const pnl = sellValue - (entry.qty * entry.price);
-        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price, pnl);
+        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price, pnl, entry.strategy); // <-- AJOUT
         if (pnl > 0) {
           this.metrics.winningTrades++;
         } else {
           this.metrics.losingTrades++;
         }
       } else {
-        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price);
+        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price, null, strategy); // <-- AJOUT
       }
       
       this.portfolio[asset] = 0;
@@ -331,13 +349,14 @@ class IchimokuBot {
           tp1: price - 1 * atrValue,
           tp2: price - 2 * atrValue,
           tp1Done: false,
-          entryTime: new Date()
+          entryTime: new Date(),
+          strategy // <-- AJOUT
         };
         
         this.portfolio.USDT += amount * price * 0.999;
         this.metrics.totalTrades++;
-        this.logTransaction(symbol, 'SHORT', amount, price);
-        console.log(`[SHORT] ${symbol} @ ${price.toFixed(6)} | SL: ${this.shorts[asset].stopLoss.toFixed(6)} | TP1: ${this.shorts[asset].tp1.toFixed(6)} | TP2: ${this.shorts[asset].tp2.toFixed(6)}`);
+        this.logTransaction(symbol, 'SHORT', amount, price, null, strategy); // <-- AJOUT
+        console.log(`[SHORT] ${symbol} @ ${price.toFixed(6)} | SL: ${this.shorts[asset].stopLoss.toFixed(6)} | TP1: ${this.shorts[asset].tp1.toFixed(6)} | TP2: ${this.shorts[asset].tp2.toFixed(6)} | Strat: ${strategy}`);
       }
     }
   }
@@ -355,7 +374,7 @@ class IchimokuBot {
         this.portfolio[asset] -= qtyToSell;
         entry.tp1Done = true;
         const pnl = qtyToSell * (currentPrice - entry.price);
-        this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice, pnl);
+        this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice, pnl, entry.strategy); // <-- AJOUT
         console.log(`[TP1] ${symbol} : +50% @ ${currentPrice.toFixed(6)}`);
       }
       
@@ -364,7 +383,7 @@ class IchimokuBot {
         this.portfolio.USDT += qtyToSell * currentPrice * 0.999;
         this.portfolio[asset] = 0;
         const pnl = qtyToSell * (currentPrice - entry.price);
-        this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl);
+        this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl, entry.strategy); // <-- AJOUT
         delete this.entryPrices[asset];
         console.log(`[TP2] ${symbol} : +reste @ ${currentPrice.toFixed(6)}`);
       }
@@ -377,14 +396,14 @@ class IchimokuBot {
           short.qty -= qtyToCover;
           short.tp1Done = true;
           const pnl = qtyToCover * (short.price - currentPrice);
-          this.logTransaction(symbol, 'COVER1', qtyToCover, currentPrice, pnl);
+          this.logTransaction(symbol, 'COVER1', qtyToCover, currentPrice, pnl, short.strategy); // <-- AJOUT
           console.log(`[COVER1] ${symbol} : +50% @ ${currentPrice.toFixed(6)}`);
         }
         
         if (short.tp1Done && currentPrice <= short.tp2 && short.qty > 0) {
           const pnl = short.qty * (short.price - currentPrice);
           this.portfolio.USDT -= short.qty * currentPrice * 0.999;
-          this.logTransaction(symbol, 'COVER2', short.qty, currentPrice, pnl);
+          this.logTransaction(symbol, 'COVER2', short.qty, currentPrice, pnl, short.strategy); // <-- AJOUT
           delete this.shorts[asset];
           console.log(`[COVER2] ${symbol} : +reste @ ${currentPrice.toFixed(6)}`);
         }
@@ -392,7 +411,7 @@ class IchimokuBot {
         if (currentPrice >= short.stopLoss) {
           const pnl = short.qty * (short.price - currentPrice);
           this.portfolio.USDT -= short.qty * currentPrice * 0.999;
-          this.logTransaction(symbol, 'COVER_SL', short.qty, currentPrice, pnl);
+          this.logTransaction(symbol, 'COVER_SL', short.qty, currentPrice, pnl, short.strategy); // <-- AJOUT
           delete this.shorts[asset];
           console.log(`[COVER_SL] ${symbol} @ ${currentPrice.toFixed(6)}`);
         }
@@ -402,7 +421,8 @@ class IchimokuBot {
     }
   }
 
-  logTransaction(symbol, type, amount, price, pnl = null) {
+  // --- AJOUT stratégie dans le log ---
+  logTransaction(symbol, type, amount, price, pnl = null, strategy = null) {
     const portfolioCopy = { ...this.portfolio };
     delete portfolioCopy.history;
     
@@ -417,7 +437,8 @@ class IchimokuBot {
       pnl: pnl ? parseFloat(pnl.toFixed(2)) : null,
       portfolio: portfolioCopy,
       totalValue: this.getTotalValue(),
-      drawdown: this.metrics.currentDrawdown
+      drawdown: this.metrics.currentDrawdown,
+      strategy // <-- AJOUT
     };
     
     this.portfolio.history.push(logEntry);
@@ -429,6 +450,7 @@ class IchimokuBot {
     }
   }
 
+  // --- NOUVELLE ANALYSE SYMBOL AVEC ICHIMOKU + BOS ---
   async analyzeSymbol(symbol) {
     console.log(`\n🔍 === ANALYSE ${symbol} ===`);
     
@@ -465,7 +487,7 @@ class IchimokuBot {
             const sellValue = this.portfolio[asset] * currentPrice * 0.999;
             this.portfolio.USDT += sellValue;
             const pnl = sellValue - (this.entryPrices[asset].qty * this.entryPrices[asset].price);
-            this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl);
+            this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl, this.entryPrices[asset].strategy); // <-- AJOUT
             this.portfolio[asset] = 0;
             delete this.entryPrices[asset];
             console.log(`[TRAILING STOP] ${symbol} @ ${currentPrice.toFixed(6)}`);
@@ -486,19 +508,36 @@ class IchimokuBot {
         return null;
       }
 
-      const signal = this.generateSignal(ichimokuData, currentPrice);
-      
-      console.log(`📊 Signal - Buy: ${signal.buy} | Sell: ${signal.sell} | Short: ${signal.short}`);
-      
-      if (signal.buy || signal.short) {
-        await this.executeVirtualTrade(symbol, signal, currentPrice, currentATR);
+      const ichimokuSignal = this.generateSignal(ichimokuData, currentPrice);
+      const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
+
+      // --- LOGIQUE COMBINÉE ---
+      let combinedRisk = config.riskPercentage;
+      const combinedBuy = ichimokuSignal.buy && bosSignal.buy;
+      const highConfidence = bosSignal.confidence >= (config.combinedSignal?.confidenceThreshold || 0.7);
+
+      let strategyTag = '';
+      if (combinedBuy && highConfidence) {
+        combinedRisk *= (config.combinedSignal?.riskMultiplier || 2);
+        strategyTag = 'Ichimoku + BoS';
+        console.log(`🔥 Signal combiné Ichimoku + BoS détecté : Risque x${config.combinedSignal?.riskMultiplier || 2}`);
+      } else if (ichimokuSignal.buy) {
+        strategyTag = 'Ichimoku';
+      } else if (bosSignal.buy) {
+        strategyTag = 'BoS';
+      }
+
+      if (ichimokuSignal.buy || bosSignal.buy) {
+        await this.executeVirtualTrade(symbol, { buy: true, strategyTag }, currentPrice, currentATR, combinedRisk);
+      } else if (ichimokuSignal.short) {
+        await this.executeVirtualTrade(symbol, { short: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR);
       }
       
       return {
         symbol,
         price: currentPrice,
         atr: currentATR,
-        signal
+        signal: { ...ichimokuSignal, bos: bosSignal }
       };
       
     } catch (error) {
@@ -531,12 +570,12 @@ class IchimokuBot {
       Object.keys(this.entryPrices).forEach(asset => {
         const position = this.entryPrices[asset];
         const balance = this.portfolio[asset];
-        console.log(`  📈 ${asset}: ${balance.toFixed(6)} @ ${position.price.toFixed(6)}`);
+        console.log(`  📈 ${asset}: ${balance.toFixed(6)} @ ${position.price.toFixed(6)} | Strat: ${position.strategy || 'N/A'}`);
       });
       
       Object.keys(this.shorts).forEach(asset => {
         const position = this.shorts[asset];
-        console.log(`  📉 ${asset} SHORT: ${position.qty.toFixed(6)} @ ${position.price.toFixed(6)}`);
+        console.log(`  📉 ${asset} SHORT: ${position.qty.toFixed(6)} @ ${position.price.toFixed(6)} | Strat: ${position.strategy || 'N/A'}`);
       });
     }
     
@@ -632,7 +671,6 @@ class IchimokuBot {
     };
   }
 
-  // CORRECTION INCOHÉRENCES INTERFACE WEB
   getPositions() {
     const positions = [];
     
@@ -653,11 +691,12 @@ class IchimokuBot {
         pnlPercent,
         entryTime: entry.entryTime ? entry.entryTime.toISOString() : new Date().toISOString(),
         stopLoss: entry.stopLoss,
-        takeProfit: entry.tp2
+        takeProfit: entry.tp2,
+        strategy: entry.strategy || 'Non spécifié' // <-- AJOUT
       });
     }
     
-    // Positions SHORT - CORRECTION VISIBILITÉ
+    // Positions SHORT
     for (const [asset, short] of Object.entries(this.shorts)) {
       const symbol = `${asset}/USDT`;
       const currentPrice = short.price;
@@ -674,16 +713,15 @@ class IchimokuBot {
         pnlPercent,
         entryTime: short.entryTime ? short.entryTime.toISOString() : new Date().toISOString(),
         stopLoss: short.stopLoss,
-        takeProfit: short.tp2
+        takeProfit: short.tp2,
+        strategy: short.strategy || 'Non spécifié' // <-- AJOUT
       });
     }
     
     return positions;
   }
 
-  // CORRECTION HISTORIQUE TRANSACTIONS
   getTransactions() {
-    // Lire depuis le fichier de log
     try {
       if (fs.existsSync('transactions.log')) {
         const logContent = fs.readFileSync('transactions.log', 'utf8');
@@ -707,7 +745,6 @@ class IchimokuBot {
       console.log('Erreur lecture transactions.log:', error.message);
     }
     
-    // Fallback vers l'historique du portfolio
     if (this.portfolio.history && this.portfolio.history.length > 0) {
       return this.portfolio.history.slice(-50).reverse();
     }
@@ -798,7 +835,6 @@ app.get('/transactions/view', (req, res) => {
     if (bot) {
       transactions = bot.getTransactions();
     } else {
-      // Lire directement depuis le fichier si le bot n'est pas initialisé
       if (fs.existsSync('transactions.log')) {
         const logContent = fs.readFileSync('transactions.log', 'utf8');
         transactions = logContent
@@ -842,6 +878,7 @@ app.get('/transactions/view', (req, res) => {
             .position { background: #444; margin: 5px 0; padding: 10px; border-radius: 4px; }
             .position.long { border-left: 3px solid #4CAF50; }
             .position.short { border-left: 3px solid #ff9800; }
+            .strategy { color: #00bfff; font-weight: bold; }
         </style>
     </head>
     <body>
@@ -869,7 +906,8 @@ app.get('/transactions/view', (req, res) => {
                     Quantité: ${pos.quantity.toFixed(6)}<br>
                     TP1: ${(pos.entryPrice * 1.022).toFixed(6)} | 
                     TP2: ${(pos.entryPrice * 1.2).toFixed(6)}<br>
-                    PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span>
+                    PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span><br>
+                    <span class="strategy">Stratégie: ${pos.strategy || 'Non spécifié'}</span>
                 </div>
               `).join('') 
               : '<p>Aucune position active</p>'
@@ -893,7 +931,8 @@ app.get('/transactions/view', (req, res) => {
                 </div>
                 <div style="font-size: 12px; color: #888;">
                     Valeur: ${(tx.amount * tx.price).toFixed(2)} USDT | 
-                    Total Portfolio: ${tx.totalValue ? tx.totalValue.toFixed(2) : 'N/A'} USDT
+                    Total Portfolio: ${tx.totalValue ? tx.totalValue.toFixed(2) : 'N/A'} USDT<br>
+                    <span class="strategy">Stratégie: ${tx.strategy || 'Non spécifié'}</span>
                 </div>
             </div>
         `).join('')}
