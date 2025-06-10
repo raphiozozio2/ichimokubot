@@ -267,8 +267,11 @@ class IchimokuBot {
         this.portfolio[asset] += amount * 0.999;
         this.portfolio.USDT -= maxAmount;
         
-        const tp1 = price + 1 * atrValue;
-        const tp2 = price + 2 * atrValue;
+        const feeRate = 0.001; // Binance fee
+        const targetTP1 = price * (1 + 0.02 + feeRate * 2); // Rentable à +2% après frais
+        const tp1 = Math.max(targetTP1, price + 1 * atrValue);
+        const targetTP2 = price * 1.2; // TP2 à +20%
+        const tp2 = Math.max(targetTP2, price + 2 * atrValue);
         const stopLoss = price - config.stopLoss.atrMultiplier * atrValue;
         const trailingStop = price - config.trailing.atrMultiplier * atrValue;
         
@@ -851,6 +854,7 @@ app.get('/transactions/view', (req, res) => {
             <p><strong>Cycles:</strong> ${bot.getStatus().cycleCount}</p>
             <p><strong>Capital:</strong> ${bot.getStatus().totalValue.toFixed(2)} USDT</p>
             <p><strong>Positions actives:</strong> ${bot.getStatus().activePositions}</p>
+            <p><strong>Taux de réussite:</strong> ${bot.getStatus().metrics.winRate.toFixed(2)}%</p>
         </div>
 
         <div class="positions">
@@ -863,6 +867,8 @@ app.get('/transactions/view', (req, res) => {
                     Prix d'entrée: ${pos.entryPrice.toFixed(6)} | 
                     Prix actuel: ${pos.currentPrice.toFixed(6)} | 
                     Quantité: ${pos.quantity.toFixed(6)}<br>
+                    TP1: ${(pos.entryPrice * 1.022).toFixed(6)} | 
+                    TP2: ${(pos.entryPrice * 1.2).toFixed(6)}<br>
                     PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span>
                 </div>
               `).join('') 
