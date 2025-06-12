@@ -33,7 +33,7 @@ class IchimokuBot {
       maxDrawdown: 0,
       currentDrawdown: 0
     };
-    this.lastReadings = {}; // Pour le tableau enrichi
+    this.lastReadings = {};
   }
 
   async delay(ms = 1000) {
@@ -51,35 +51,23 @@ class IchimokuBot {
     }
   }
 
-  async fetchMultiTimeframeOHLCV(symbol) {
-    const results = {};
-    for (const tf of config.timeframes) {
-      const apiCall = async () => {
-        const ohlcv = await this.exchange.fetchOHLCV(
-          symbol, 
-          tf, 
-          undefined, 
-          Math.max(config.ichimoku.spanPeriod * 3, 100)
-        );
-        if (!ohlcv || ohlcv.length < config.ichimoku.spanPeriod) {
-          throw new Error(`Données insuffisantes: ${ohlcv?.length || 0}/${config.ichimoku.spanPeriod}`);
-        }
-        return ohlcv;
-      };
-      results[tf] = await this.retryApiCall(apiCall);
-      await this.delay(200);
-    }
-    return results;
-  }
-
   async validatePrice(symbol, price) {
     try {
       const ticker = await this.retryApiCall(async () => await this.exchange.fetchTicker(symbol));
+      // --- LOG DÉTAILLÉ ---
+      console.log(`[validatePrice] ${symbol} ticker:`, ticker);
       const spread = Math.abs(ticker.last - price) / ticker.last * 100;
-      if (spread > config.priceValidation.maxSpreadPercent) return { valid: false, reason: 'Écart prix trop important' };
-      if (ticker.baseVolume < config.priceValidation.minVolume) return { valid: false, reason: 'Volume insuffisant' };
+      if (spread > config.priceValidation.maxSpreadPercent) {
+        console.log(`[validatePrice] ${symbol} Écart prix trop important: ${spread.toFixed(4)}%`);
+        return { valid: false, reason: 'Écart prix trop important' };
+      }
+      if (!ticker.baseVolume || ticker.baseVolume < config.priceValidation.minVolume) {
+        console.log(`[validatePrice] ${symbol} Volume insuffisant: baseVolume=${ticker.baseVolume}`);
+        return { valid: false, reason: 'Volume insuffisant' };
+      }
       return { valid: true, reason: '' };
-    } catch {
+    } catch (err) {
+      console.log(`[validatePrice] ${symbol} Erreur récupération ticker:`, err);
       return { valid: false, reason: 'Validation prix échouée' };
     }
   }
