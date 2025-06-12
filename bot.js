@@ -76,11 +76,11 @@ class IchimokuBot {
     try {
       const ticker = await this.retryApiCall(async () => await this.exchange.fetchTicker(symbol));
       const spread = Math.abs(ticker.last - price) / ticker.last * 100;
-      if (spread > config.priceValidation.maxSpreadPercent) return false;
-      if (ticker.baseVolume < config.priceValidation.minVolume) return false;
-      return true;
+      if (spread > config.priceValidation.maxSpreadPercent) return { valid: false, reason: 'Écart prix trop important' };
+      if (ticker.baseVolume < config.priceValidation.minVolume) return { valid: false, reason: 'Volume insuffisant' };
+      return { valid: true, reason: '' };
     } catch {
-      return false;
+      return { valid: false, reason: 'Validation prix échouée' };
     }
   }
 
@@ -206,12 +206,45 @@ class IchimokuBot {
 
   async executeVirtualTrade(symbol, signal, price, atrValue = 0, customRisk = null) {
     const asset = symbol.split('/')[0];
-    if (!(await this.validatePrice(symbol, price))) return;
+    const minTradeUSD = 10; // minNotional Binance
     const strategy = signal.strategyTag || signal.strategy || 'Ichimoku';
+
+    // Validation prix
+    const validation = await this.validatePrice(symbol, price);
+    if (!validation.valid) {
+      this.lastReadings[symbol].tradeBlockReason = validation.reason;
+      return;
+    }
+
+    // Taille min trade
+    const dynamicRisk = this.getDynamicRisk(atrValue);
+    const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
+    if (maxAmount < minTradeUSD) {
+      this.lastReadings[symbol].tradeBlockReason = 'Montant trop faible pour trade';
+      return;
+    }
+
+    // Position déjà ouverte
+    if (signal.short && this.shorts[asset]) {
+      this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
+      return;
+    }
+    if (signal.buy && this.entryPrices[asset]) {
+      this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
+      return;
+    }
+
+    // Peut-on ouvrir une nouvelle position ?
+    if (!this.canOpenNewPosition()) {
+      this.lastReadings[symbol].tradeBlockReason = 'Trop de positions ouvertes';
+      return;
+    }
+
+    // Si tout va bien, on efface la raison de blocage
+    this.lastReadings[symbol].tradeBlockReason = '';
+
+    // --- OUVERTURE TRADE ---
     if (signal.buy) {
-      if (this.entryPrices[asset] || !this.canOpenNewPosition()) return;
-      const dynamicRisk = this.getDynamicRisk(atrValue);
-      const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
         this.portfolio[asset] += amount * 0.999;
@@ -255,10 +288,7 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
     }
-    // Short : ne pas ajouter d'USDT à l'ouverture.
-    if (signal.short && !this.shorts[asset] && this.canOpenNewPosition()) {
-      const dynamicRisk = this.getDynamicRisk(atrValue);
-      const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
+    if (signal.short && !this.shorts[asset]) {
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
         this.shorts[asset] = {
@@ -272,7 +302,6 @@ class IchimokuBot {
           entryTime: new Date(),
           strategy
         };
-        // PAS d'ajout d'USDT ici
         this.metrics.totalTrades++;
         this.logTransaction(symbol, 'SHORT', amount, price, null, strategy);
       }
@@ -302,7 +331,6 @@ class IchimokuBot {
         this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl, entry.strategy);
         delete this.entryPrices[asset];
       }
-      // (Même logique à ajouter pour les shorts si tu veux)
     } catch (error) {}
   }
 
@@ -332,7 +360,7 @@ class IchimokuBot {
   async analyzeSymbol(symbol) {
     try {
       let ichimokuStatus = '-', bosStatus = '-';
-      let ichimokuReason = '', bosReason = '';
+      let ichimokuReason = '', bosReason = '', tradeBlockReason = '';
       let currentPrice = null;
       try {
         const ohlcvs = await this.fetchMultiTimeframeOHLCV(symbol);
@@ -343,7 +371,8 @@ class IchimokuBot {
             ichimoku: '-',
             ichimokuReason: '',
             bos: '-',
-            bosReason: ''
+            bosReason: '',
+            tradeBlockReason: 'Pas de données'
           };
           return null;
         }
@@ -400,6 +429,39 @@ class IchimokuBot {
           bosStatus = 'NON';
         }
 
+        // Initialisation de la raison de blocage
+        tradeBlockReason = '';
+
+        // Vérification position déjà ouverte
+        const asset = symbol.split('/')[0];
+        if (ichimokuSignal.short && this.shorts[asset]) {
+          tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
+        }
+        if (ichimokuSignal.buy && this.entryPrices[asset]) {
+          tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
+        }
+
+        // Validation du prix
+        const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
+        const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
+        const validation = await this.validatePrice(symbol, currentPrice);
+        if (!validation.valid) {
+          tradeBlockReason = validation.reason;
+        }
+
+        // Taille min trade
+        const minTradeUSD = 10;
+        const dynamicRisk = this.getDynamicRisk(currentATR);
+        const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
+        if (maxAmount < minTradeUSD) {
+          tradeBlockReason = 'Montant trop faible pour trade';
+        }
+
+        // Trop de positions ouvertes
+        if (!this.canOpenNewPosition()) {
+          tradeBlockReason = 'Trop de positions ouvertes';
+        }
+
         // Enregistre tout dans lastReadings
         this.lastReadings[symbol] = {
           value: currentPrice,
@@ -407,13 +469,11 @@ class IchimokuBot {
           ichimoku: ichimokuStatus,
           ichimokuReason,
           bos: bosStatus,
-          bosReason
+          bosReason,
+          tradeBlockReason
         };
 
-        const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
-        const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
         if (!this.isTrending(ohlcvs['1d'])) return null;
-        const asset = symbol.split('/')[0];
         if (this.entryPrices[asset]) {
           await this.checkPartialTakeProfit(symbol, currentPrice);
           if (this.entryPrices[asset]) {
@@ -435,14 +495,16 @@ class IchimokuBot {
         }
 
         // --- Exécution PARALLÈLE des stratégies ---
-        if (ichimokuSignal.buy) {
-          await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
-        }
-        if (bosSignal.buy && bosSignal.confidence >= 0.7) {
-          await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'BoS' }, currentPrice, currentATR, config.riskPercentage);
-        }
-        if (ichimokuSignal.short) {
-          await this.executeVirtualTrade(symbol, { short: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
+        if (!tradeBlockReason) {
+          if (ichimokuSignal.buy) {
+            await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
+          }
+          if (bosSignal.buy && bosSignal.confidence >= 0.7) {
+            await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'BoS' }, currentPrice, currentATR, config.riskPercentage);
+          }
+          if (ichimokuSignal.short) {
+            await this.executeVirtualTrade(symbol, { short: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
+          }
         }
         return { symbol, price: currentPrice, atr: currentATR, signal: { ...ichimokuSignal, bos: bosSignal } };
       } catch (err) {
@@ -452,7 +514,8 @@ class IchimokuBot {
           ichimoku: '-',
           ichimokuReason: '',
           bos: '-',
-          bosReason: ''
+          bosReason: '',
+          tradeBlockReason: 'Erreur API ou données'
         };
         return null;
       }
@@ -619,6 +682,7 @@ app.get('/transactions/view', (req, res) => {
           <th>Raison Ichimoku</th>
           <th>BoS</th>
           <th>Raison BoS</th>
+          <th>Blocage Ouverture</th>
         </tr>
         ${
           symbols.map(sym => {
@@ -645,6 +709,9 @@ app.get('/transactions/view', (req, res) => {
               </td>
               <td style="text-align:center;">
                 ${reading && reading.bosReason ? reading.bosReason : '-'}
+              </td>
+              <td style="text-align:center;">
+                ${reading && reading.tradeBlockReason ? reading.tradeBlockReason : '-'}
               </td>
             </tr>`;
           }).join('')
