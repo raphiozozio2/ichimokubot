@@ -5,15 +5,28 @@ require('dotenv').config();
 const fs = require('fs');
 const express = require('express');
 
+// LOGS GLOBAUX : capte toutes les erreurs fatales et promesses non catchées
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection:', reason);
+});
+
 class IchimokuBot {
   constructor() {
-    this.exchange = new ccxt[config.exchange]({
-      apiKey: process.env.BINANCE_API_KEY,
-      secret: process.env.BINANCE_API_SECRET,
-      enableRateLimit: config.apiSettings.enableRateLimit,
-      rateLimit: config.apiSettings.rateLimit,
-      timeout: 30000
-    });
+    try {
+      this.exchange = new ccxt[config.exchange]({
+        apiKey: process.env.BINANCE_API_KEY,
+        secret: process.env.BINANCE_API_SECRET,
+        enableRateLimit: config.apiSettings.enableRateLimit,
+        rateLimit: config.apiSettings.rateLimit,
+        timeout: 30000
+      });
+      console.log('[INIT] Exchange initialisé avec succès');
+    } catch (e) {
+      console.error('[INIT] Erreur lors de l\'initialisation de l\'exchange:', e);
+    }
     this.portfolio = { USDT: config.initialCapital, history: [] };
     config.symbols.forEach(symbol => {
       const asset = symbol.split('/')[0];
@@ -45,36 +58,62 @@ class IchimokuBot {
       try {
         return await apiCall();
       } catch (error) {
+        console.error(`[API] Tentative ${attempt} échouée:`, error.message || error);
         if (attempt === maxRetries) throw error;
         await this.delay(config.apiSettings.retryDelay * Math.pow(2, attempt - 1));
       }
     }
   }
 
+  async fetchMultiTimeframeOHLCV(symbol) {
+    const results = {};
+    for (const tf of config.timeframes) {
+      try {
+        const apiCall = async () => {
+          const ohlcv = await this.exchange.fetchOHLCV(
+            symbol,
+            tf,
+            undefined,
+            Math.max(config.ichimoku.spanPeriod * 3, 100)
+          );
+          if (!ohlcv || ohlcv.length < config.ichimoku.spanPeriod) {
+            throw new Error(`Données insuffisantes: ${ohlcv?.length || 0}/${config.ichimoku.spanPeriod}`);
+          }
+          return ohlcv;
+        };
+        results[tf] = await this.retryApiCall(apiCall);
+        await this.delay(200);
+      } catch (e) {
+        console.error(`[OHLCV] ${symbol} (${tf}) : ${e.message || e}`);
+        throw e;
+      }
+    }
+    return results;
+  }
+
   async validatePrice(symbol, price) {
     try {
       const ticker = await this.retryApiCall(async () => await this.exchange.fetchTicker(symbol));
-      // --- LOG DÉTAILLÉ ---
       console.log(`[validatePrice] ${symbol} ticker:`, ticker);
       const spread = Math.abs(ticker.last - price) / ticker.last * 100;
       if (spread > config.priceValidation.maxSpreadPercent) {
-        console.log(`[validatePrice] ${symbol} Écart prix trop important: ${spread.toFixed(4)}%`);
+        console.warn(`[validatePrice] ${symbol} Écart prix trop important: ${spread.toFixed(4)}%`);
         return { valid: false, reason: 'Écart prix trop important' };
       }
       if (!ticker.baseVolume || ticker.baseVolume < config.priceValidation.minVolume) {
-        console.log(`[validatePrice] ${symbol} Volume insuffisant: baseVolume=${ticker.baseVolume}`);
+        console.warn(`[validatePrice] ${symbol} Volume insuffisant: baseVolume=${ticker.baseVolume}`);
         return { valid: false, reason: 'Volume insuffisant' };
       }
       return { valid: true, reason: '' };
     } catch (err) {
-      console.log(`[validatePrice] ${symbol} Erreur récupération ticker:`, err);
+      console.error(`[validatePrice] ${symbol} Erreur récupération ticker:`, err.message || err);
       return { valid: false, reason: 'Validation prix échouée' };
     }
   }
 
   calculateIchimoku(ohlcv) {
-    if (!ohlcv || ohlcv.length < config.ichimoku.spanPeriod) return null;
     try {
+      if (!ohlcv || ohlcv.length < config.ichimoku.spanPeriod) return null;
       return ichimokucloud({
         high: ohlcv.map(c => c[2]),
         low: ohlcv.map(c => c[3]),
@@ -83,35 +122,38 @@ class IchimokuBot {
         spanPeriod: config.ichimoku.spanPeriod,
         displacement: config.ichimoku.displacement
       });
-    } catch {
+    } catch (e) {
+      console.error('[Ichimoku] Erreur calcul:', e);
       return null;
     }
   }
 
   calculateATR(ohlcv, period = 14) {
-    if (!ohlcv || ohlcv.length < period) return [];
     try {
+      if (!ohlcv || ohlcv.length < period) return [];
       return atr({
         high: ohlcv.map(c => c[2]),
         low: ohlcv.map(c => c[3]),
         close: ohlcv.map(c => c[4]),
         period
       });
-    } catch {
+    } catch (e) {
+      console.error('[ATR] Erreur calcul:', e);
       return [];
     }
   }
 
   calculateADX(ohlcv, period = 14) {
-    if (!ohlcv || ohlcv.length < period * 2) return [];
     try {
+      if (!ohlcv || ohlcv.length < period * 2) return [];
       return adx({
         high: ohlcv.map(c => c[2]),
         low: ohlcv.map(c => c[3]),
         close: ohlcv.map(c => c[4]),
         period
       });
-    } catch {
+    } catch (e) {
+      console.error('[ADX] Erreur calcul:', e);
       return [];
     }
   }
@@ -127,7 +169,8 @@ class IchimokuBot {
       const lastClose = ohlcv[ohlcv.length - 1][4];
       return (lastClose > last.spanA && lastClose > last.spanB) ||
              (lastClose < last.spanA && lastClose < last.spanB);
-    } catch {
+    } catch (e) {
+      console.error('[isTrending] Erreur:', e);
       return false;
     }
   }
@@ -142,7 +185,8 @@ class IchimokuBot {
         sell: !inCloud && currentPrice < last.conversion,
         short: !inCloud && currentPrice < last.conversion && currentPrice < last.spanA
       };
-    } catch {
+    } catch (e) {
+      console.error('[generateSignal] Erreur:', e);
       return { buy: false, sell: false, short: false };
     }
   }
@@ -170,6 +214,7 @@ class IchimokuBot {
     this.metrics.currentDrawdown = Math.max(0, drawdownPercent);
     this.metrics.maxDrawdown = Math.max(this.metrics.maxDrawdown, this.metrics.currentDrawdown);
     if (this.metrics.currentDrawdown > config.maxDrawdown) {
+      console.warn('[Drawdown] Max drawdown dépassé, arrêt du bot');
       this.stop();
       return false;
     }
@@ -194,13 +239,14 @@ class IchimokuBot {
 
   async executeVirtualTrade(symbol, signal, price, atrValue = 0, customRisk = null) {
     const asset = symbol.split('/')[0];
-    const minTradeUSD = 10; // minNotional Binance
+    const minTradeUSD = 10;
     const strategy = signal.strategyTag || signal.strategy || 'Ichimoku';
 
     // Validation prix
     const validation = await this.validatePrice(symbol, price);
     if (!validation.valid) {
       this.lastReadings[symbol].tradeBlockReason = validation.reason;
+      console.warn(`[TRADE] ${symbol} refusé : ${validation.reason}`);
       return;
     }
 
@@ -209,27 +255,31 @@ class IchimokuBot {
     const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
     if (maxAmount < minTradeUSD) {
       this.lastReadings[symbol].tradeBlockReason = 'Montant trop faible pour trade';
+      console.warn(`[TRADE] ${symbol} refusé : Montant trop faible pour trade`);
       return;
     }
 
     // Position déjà ouverte
     if (signal.short && this.shorts[asset]) {
       this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
+      console.warn(`[TRADE] ${symbol} refusé : Position déjà ouverte`);
       return;
     }
     if (signal.buy && this.entryPrices[asset]) {
       this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
+      console.warn(`[TRADE] ${symbol} refusé : Position déjà ouverte`);
       return;
     }
 
     // Peut-on ouvrir une nouvelle position ?
     if (!this.canOpenNewPosition()) {
       this.lastReadings[symbol].tradeBlockReason = 'Trop de positions ouvertes';
+      console.warn(`[TRADE] ${symbol} refusé : Trop de positions ouvertes`);
       return;
     }
 
-    // Si tout va bien, on efface la raison de blocage
     this.lastReadings[symbol].tradeBlockReason = '';
+    console.log(`[TRADE] ${symbol} OUVERTURE ${signal.buy ? 'LONG' : 'SHORT'} à ${price} USDT`);
 
     // --- OUVERTURE TRADE ---
     if (signal.buy) {
@@ -309,6 +359,7 @@ class IchimokuBot {
         const pnl = qtyToSell * (currentPrice - entry.price);
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice, pnl, entry.strategy);
+        console.log(`[TP1] ${symbol} pris à ${currentPrice}`);
       }
       if (entry.tp1Done && currentPrice >= entry.tp2 && this.portfolio[asset] > 0) {
         const qtyToSell = this.portfolio[asset];
@@ -318,8 +369,11 @@ class IchimokuBot {
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl, entry.strategy);
         delete this.entryPrices[asset];
+        console.log(`[TP2] ${symbol} pris à ${currentPrice}`);
       }
-    } catch (error) {}
+    } catch (error) {
+      console.error(`[TP] Erreur sur ${symbol}:`, error);
+    }
   }
 
   logTransaction(symbol, type, amount, price, pnl = null, strategy = null) {
@@ -342,7 +396,9 @@ class IchimokuBot {
     this.portfolio.history.push(logEntry);
     try {
       fs.appendFileSync('transactions.log', JSON.stringify(logEntry) + '\n');
-    } catch {}
+    } catch (e) {
+      console.error('[logTransaction] Erreur écriture log:', e);
+    }
   }
 
   async analyzeSymbol(symbol) {
@@ -360,8 +416,9 @@ class IchimokuBot {
             ichimokuReason: '',
             bos: '-',
             bosReason: '',
-            tradeBlockReason: 'Pas de données'
+            tradeBlockReason: 'Erreur API ou données'
           };
+          console.warn(`[analyzeSymbol] ${symbol} : Pas de données OHLCV`);
           return null;
         }
         currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
@@ -473,6 +530,7 @@ class IchimokuBot {
               this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl, this.entryPrices[asset].strategy);
               this.portfolio[asset] = 0;
               delete this.entryPrices[asset];
+              console.log(`[TRAILING_STOP] ${symbol} sorti à ${currentPrice}`);
             }
           }
           return null;
@@ -505,9 +563,13 @@ class IchimokuBot {
           bosReason: '',
           tradeBlockReason: 'Erreur API ou données'
         };
+        console.error(`[analyzeSymbol] ${symbol} : Erreur API ou données`, err.message || err);
         return null;
       }
-    } catch (error) { return null; }
+    } catch (error) {
+      console.error(`[analyzeSymbol] ${symbol} : Erreur fatale`, error);
+      return null;
+    }
   }
 
   getTotalValue() {
@@ -605,7 +667,9 @@ class IchimokuBot {
           .reverse();
         return transactions;
       }
-    } catch {}
+    } catch (e) {
+      console.error('[getTransactions] Erreur lecture log:', e);
+    }
     if (this.portfolio.history && this.portfolio.history.length > 0) {
       return this.portfolio.history.slice(-50).reverse();
     }
@@ -615,25 +679,33 @@ class IchimokuBot {
   async runCycle() {
     if (!this.isRunning) return;
     if (!this.updateDrawdown()) return;
+    console.log(`[runCycle] Démarrage du cycle #${this.cycleCount + 1}`);
     const analysisPromises = config.symbols.map(symbol => this.analyzeSymbol(symbol));
     await Promise.allSettled(analysisPromises);
     this.cycleCount++;
+    console.log(`[runCycle] Fin du cycle #${this.cycleCount}`);
   }
 
   async start() {
     if (this.isRunning) return;
     this.isRunning = true;
     this.startTime = Date.now();
+    console.log('[START] Bot démarré');
     while (this.isRunning) {
       try {
         await this.runCycle();
         if (this.isRunning) await this.delay(config.cycleInterval);
-      } catch { await this.delay(5000); }
+      } catch (e) {
+        console.error('[START] Erreur dans la boucle principale:', e);
+        await this.delay(5000);
+      }
     }
+    console.log('[STOP] Bot arrêté');
   }
 
   stop() {
     this.isRunning = false;
+    console.log('[STOP] Arrêt demandé');
   }
 }
 
@@ -795,6 +867,7 @@ app.get('/transactions/view', (req, res) => {
     `;
     res.send(html);
   } catch (error) {
+    console.error('[Express] Erreur /transactions/view:', error);
     res.status(500).send(`Erreur: ${error.message}`);
   }
 });
@@ -809,7 +882,10 @@ app.post('/api/start', async (req, res) => {
     bot = new IchimokuBot();
     await bot.start();
     res.json({ success: true, message: 'Bot démarré' });
-  } catch (error) { res.json({ error: error.message }); }
+  } catch (error) {
+    console.error('[Express] Erreur /api/start:', error);
+    res.json({ error: error.message });
+  }
 });
 
 app.post('/api/stop', (req, res) => {
@@ -819,7 +895,7 @@ app.post('/api/stop', (req, res) => {
 
 async function main() {
   bot = new IchimokuBot();
-  const PORT = process.env.PORT || 3000;
+  const PORT = process.env.PORT || 8080;
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🌐 Serveur web démarré sur le port ${PORT}`);
     console.log(`📊 Interface: http://localhost:${PORT}/transactions/view`);
@@ -827,11 +903,11 @@ async function main() {
   process.on('SIGINT', () => { if (bot) bot.stop(); process.exit(0); });
   process.on('uncaughtException', (error) => { if (bot) bot.stop(); process.exit(1); });
   process.on('unhandledRejection', (reason, promise) => { if (bot) bot.stop(); process.exit(1); });
-  try { await bot.start(); } catch { process.exit(1); }
+  try { await bot.start(); } catch (e) { console.error('[main] Erreur fatale:', e); process.exit(1); }
 }
 
 if (require.main === module) {
-  main().catch(error => { process.exit(1); });
+  main().catch(error => { console.error('[main] Erreur fatale:', error); process.exit(1); });
 }
 
 module.exports = IchimokuBot;
