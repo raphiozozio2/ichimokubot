@@ -331,53 +331,67 @@ class IchimokuBot {
 
   async analyzeSymbol(symbol) {
     try {
-      const ohlcvs = await this.fetchMultiTimeframeOHLCV(symbol);
-      if (!ohlcvs['15m'] || ohlcvs['15m'].length === 0) return null;
-      const currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
-      const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
-      const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
-      if (!this.isTrending(ohlcvs['1d'])) return null;
-      // --- Stockage de la dernière valeur lue ---
-      this.lastReadings[symbol] = {
-        value: currentPrice,
-        timestamp: new Date()
-      };
-      const asset = symbol.split('/')[0];
-      if (this.entryPrices[asset]) {
-        await this.checkPartialTakeProfit(symbol, currentPrice);
-        if (this.entryPrices[asset]) {
-          this.updateTrailingStop(asset, currentPrice, currentATR);
-          if (currentPrice <= this.entryPrices[asset].trailingStop) {
-            const sellValue = this.portfolio[asset] * currentPrice * 0.999;
-            this.portfolio.USDT += sellValue;
-            const pnl = sellValue - (this.entryPrices[asset].qty * this.entryPrices[asset].price);
-            this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl, this.entryPrices[asset].strategy);
-            this.portfolio[asset] = 0;
-            delete this.entryPrices[asset];
-          }
+      let currentPrice = null;
+      try {
+        const ohlcvs = await this.fetchMultiTimeframeOHLCV(symbol);
+        if (!ohlcvs['15m'] || ohlcvs['15m'].length === 0) {
+          this.lastReadings[symbol] = {
+            value: 'sans',
+            timestamp: null
+          };
+          return null;
         }
-        return null;
-      }
-      if (this.shorts[asset]) {
-        await this.checkPartialTakeProfit(symbol, currentPrice);
-        return null;
-      }
-      const ichimokuData = this.calculateIchimoku(ohlcvs['1h']);
-      if (!ichimokuData || ichimokuData.length === 0) return null;
-      const ichimokuSignal = this.generateSignal(ichimokuData, currentPrice);
-      const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
+        currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
+        this.lastReadings[symbol] = {
+          value: currentPrice,
+          timestamp: new Date()
+        };
+        const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
+        const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
+        if (!this.isTrending(ohlcvs['1d'])) return null;
+        const asset = symbol.split('/')[0];
+        if (this.entryPrices[asset]) {
+          await this.checkPartialTakeProfit(symbol, currentPrice);
+          if (this.entryPrices[asset]) {
+            this.updateTrailingStop(asset, currentPrice, currentATR);
+            if (currentPrice <= this.entryPrices[asset].trailingStop) {
+              const sellValue = this.portfolio[asset] * currentPrice * 0.999;
+              this.portfolio.USDT += sellValue;
+              const pnl = sellValue - (this.entryPrices[asset].qty * this.entryPrices[asset].price);
+              this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl, this.entryPrices[asset].strategy);
+              this.portfolio[asset] = 0;
+              delete this.entryPrices[asset];
+            }
+          }
+          return null;
+        }
+        if (this.shorts[asset]) {
+          await this.checkPartialTakeProfit(symbol, currentPrice);
+          return null;
+        }
+        const ichimokuData = this.calculateIchimoku(ohlcvs['1h']);
+        if (!ichimokuData || ichimokuData.length === 0) return null;
+        const ichimokuSignal = this.generateSignal(ichimokuData, currentPrice);
+        const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
 
-      // --- Exécution PARALLÈLE des stratégies ---
-      if (ichimokuSignal.buy) {
-        await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
+        // --- Exécution PARALLÈLE des stratégies ---
+        if (ichimokuSignal.buy) {
+          await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
+        }
+        if (bosSignal.buy && bosSignal.confidence >= 0.7) {
+          await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'BoS' }, currentPrice, currentATR, config.riskPercentage);
+        }
+        if (ichimokuSignal.short) {
+          await this.executeVirtualTrade(symbol, { short: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
+        }
+        return { symbol, price: currentPrice, atr: currentATR, signal: { ...ichimokuSignal, bos: bosSignal } };
+      } catch (err) {
+        this.lastReadings[symbol] = {
+          value: 'sans',
+          timestamp: null
+        };
+        return null;
       }
-      if (bosSignal.buy && bosSignal.confidence >= 0.7) {
-        await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'BoS' }, currentPrice, currentATR, config.riskPercentage);
-      }
-      if (ichimokuSignal.short) {
-        await this.executeVirtualTrade(symbol, { short: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
-      }
-      return { symbol, price: currentPrice, atr: currentATR, signal: { ...ichimokuSignal, bos: bosSignal } };
     } catch (error) { return null; }
   }
 
@@ -543,8 +557,8 @@ app.get('/transactions/view', (req, res) => {
             const reading = bot && bot.lastReadings && bot.lastReadings[sym];
             return `<tr>
               <td>${sym}</td>
-              <td>${reading ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
-              <td>${reading ? reading.value : 'sans'}</td>
+              <td>${reading && reading.timestamp ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
+              <td>${reading && reading.value !== undefined ? reading.value : 'sans'}</td>
             </tr>`;
           }).join('')
         }
