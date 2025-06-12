@@ -349,19 +349,30 @@ class IchimokuBot {
         }
         currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
 
-        // Ichimoku
+        // Ichimoku enrichi (long/short/non + raison)
         const ichimokuData = this.calculateIchimoku(ohlcvs['1h']);
-        let ichimokuSignal = { buy: false };
+        let ichimokuSignal = { buy: false, short: false };
         if (!ichimokuData || ichimokuData.length === 0) {
-          ichimokuStatus = 'non';
+          ichimokuStatus = 'NON';
           ichimokuReason = 'pas de données';
         } else {
           ichimokuSignal = this.generateSignal(ichimokuData, currentPrice);
+          const last = ichimokuData[ichimokuData.length - 1];
           if (ichimokuSignal.buy) {
-            ichimokuStatus = 'OK';
-            ichimokuReason = '';
+            ichimokuStatus = 'OUI (long)';
+            if (currentPrice > last.spanA && currentPrice > last.spanB && currentPrice > last.conversion && last.conversion > last.base) {
+              ichimokuReason = 'prix au-dessus nuage et croisement';
+            } else {
+              ichimokuReason = 'conditions long';
+            }
+          } else if (ichimokuSignal.short) {
+            ichimokuStatus = 'OUI (short)';
+            if (currentPrice < last.spanA && currentPrice < last.spanB && currentPrice < last.conversion) {
+              ichimokuReason = 'prix sous nuage';
+            } else {
+              ichimokuReason = 'conditions short';
+            }
           } else {
-            const last = ichimokuData[ichimokuData.length - 1];
             if (currentPrice < last.spanA || currentPrice < last.spanB) {
               ichimokuReason = 'prix sous nuage';
             } else if (!(currentPrice > last.conversion && last.conversion > last.base)) {
@@ -369,15 +380,15 @@ class IchimokuBot {
             } else {
               ichimokuReason = 'autre';
             }
-            ichimokuStatus = 'non';
+            ichimokuStatus = 'NON';
           }
         }
 
         // BoS
         const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
         if (bosSignal.buy && bosSignal.confidence >= 0.7) {
-          bosStatus = 'OK';
-          bosReason = '';
+          bosStatus = 'OUI';
+          bosReason = 'breakout validé';
         } else {
           if (!bosSignal.buy) {
             bosReason = 'pas de breakout';
@@ -386,7 +397,7 @@ class IchimokuBot {
           } else {
             bosReason = 'autre';
           }
-          bosStatus = 'non';
+          bosStatus = 'NON';
         }
 
         // Enregistre tout dans lastReadings
@@ -616,10 +627,25 @@ app.get('/transactions/view', (req, res) => {
               <td>${sym}</td>
               <td>${reading && reading.timestamp ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
               <td>${reading && reading.value !== undefined ? reading.value : 'sans'}</td>
-              <td style="text-align:center;">${reading && reading.ichimoku === 'OK' ? '✅ OK' : (reading && reading.ichimoku === 'non' ? '❌ non' : '-')}</td>
-              <td style="text-align:center;">${reading && reading.ichimokuReason ? reading.ichimokuReason : '-'}</td>
-              <td style="text-align:center;">${reading && reading.bos === 'OK' ? '✅ OK' : (reading && reading.bos === 'non' ? '❌ non' : '-')}</td>
-              <td style="text-align:center;">${reading && reading.bosReason ? reading.bosReason : '-'}</td>
+              <td style="text-align:center;">
+                ${
+                  reading && reading.ichimoku === 'OUI (long)' ? '🟢 OUI (long)' :
+                  reading && reading.ichimoku === 'OUI (short)' ? '🟣 OUI (short)' :
+                  (reading && reading.ichimoku === 'NON' ? '❌ NON' : '-')
+                }
+              </td>
+              <td style="text-align:center;">
+                ${reading && reading.ichimokuReason ? reading.ichimokuReason : '-'}
+              </td>
+              <td style="text-align:center;">
+                ${
+                  reading && reading.bos === 'OUI' ? '🟢 OUI' :
+                  (reading && reading.bos === 'NON' ? '❌ NON' : '-')
+                }
+              </td>
+              <td style="text-align:center;">
+                ${reading && reading.bosReason ? reading.bosReason : '-'}
+              </td>
             </tr>`;
           }).join('')
         }
