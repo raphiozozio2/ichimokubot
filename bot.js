@@ -100,8 +100,9 @@ class IchimokuBot {
         console.warn(`[validatePrice] ${symbol} Écart prix trop important: ${spread.toFixed(4)}%`);
         return { valid: false, reason: 'Écart prix trop important' };
       }
-      if (!ticker.baseVolume || ticker.baseVolume < config.priceValidation.minVolume) {
-        console.warn(`[validatePrice] ${symbol} Volume insuffisant: baseVolume=${ticker.baseVolume}`);
+      // Correction ici : on utilise quoteVolume (volume en USDT) et plus baseVolume
+      if (!ticker.quoteVolume || ticker.quoteVolume < config.priceValidation.minVolume) {
+        console.warn(`[validatePrice] ${symbol} Volume insuffisant: quoteVolume=${ticker.quoteVolume}`);
         return { valid: false, reason: 'Volume insuffisant' };
       }
       return { valid: true, reason: '' };
