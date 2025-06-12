@@ -33,7 +33,7 @@ class IchimokuBot {
       maxDrawdown: 0,
       currentDrawdown: 0
     };
-    this.lastReadings = {}; // Pour le tableau des dernières valeurs lues
+    this.lastReadings = {}; // Pour le tableau enrichi
   }
 
   async delay(ms = 1000) {
@@ -331,21 +331,74 @@ class IchimokuBot {
 
   async analyzeSymbol(symbol) {
     try {
+      let ichimokuStatus = '-', bosStatus = '-';
+      let ichimokuReason = '', bosReason = '';
       let currentPrice = null;
       try {
         const ohlcvs = await this.fetchMultiTimeframeOHLCV(symbol);
         if (!ohlcvs['15m'] || ohlcvs['15m'].length === 0) {
           this.lastReadings[symbol] = {
             value: 'sans',
-            timestamp: null
+            timestamp: null,
+            ichimoku: '-',
+            ichimokuReason: '',
+            bos: '-',
+            bosReason: ''
           };
           return null;
         }
         currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
+
+        // Ichimoku
+        const ichimokuData = this.calculateIchimoku(ohlcvs['1h']);
+        let ichimokuSignal = { buy: false };
+        if (!ichimokuData || ichimokuData.length === 0) {
+          ichimokuStatus = 'non';
+          ichimokuReason = 'pas de données';
+        } else {
+          ichimokuSignal = this.generateSignal(ichimokuData, currentPrice);
+          if (ichimokuSignal.buy) {
+            ichimokuStatus = 'OK';
+            ichimokuReason = '';
+          } else {
+            const last = ichimokuData[ichimokuData.length - 1];
+            if (currentPrice < last.spanA || currentPrice < last.spanB) {
+              ichimokuReason = 'prix sous nuage';
+            } else if (!(currentPrice > last.conversion && last.conversion > last.base)) {
+              ichimokuReason = 'pas de croisement';
+            } else {
+              ichimokuReason = 'autre';
+            }
+            ichimokuStatus = 'non';
+          }
+        }
+
+        // BoS
+        const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
+        if (bosSignal.buy && bosSignal.confidence >= 0.7) {
+          bosStatus = 'OK';
+          bosReason = '';
+        } else {
+          if (!bosSignal.buy) {
+            bosReason = 'pas de breakout';
+          } else if (bosSignal.confidence < 0.7) {
+            bosReason = 'confiance faible';
+          } else {
+            bosReason = 'autre';
+          }
+          bosStatus = 'non';
+        }
+
+        // Enregistre tout dans lastReadings
         this.lastReadings[symbol] = {
           value: currentPrice,
-          timestamp: new Date()
+          timestamp: new Date(),
+          ichimoku: ichimokuStatus,
+          ichimokuReason,
+          bos: bosStatus,
+          bosReason
         };
+
         const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
         const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
         if (!this.isTrending(ohlcvs['1d'])) return null;
@@ -369,10 +422,6 @@ class IchimokuBot {
           await this.checkPartialTakeProfit(symbol, currentPrice);
           return null;
         }
-        const ichimokuData = this.calculateIchimoku(ohlcvs['1h']);
-        if (!ichimokuData || ichimokuData.length === 0) return null;
-        const ichimokuSignal = this.generateSignal(ichimokuData, currentPrice);
-        const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
 
         // --- Exécution PARALLÈLE des stratégies ---
         if (ichimokuSignal.buy) {
@@ -388,7 +437,11 @@ class IchimokuBot {
       } catch (err) {
         this.lastReadings[symbol] = {
           value: 'sans',
-          timestamp: null
+          timestamp: null,
+          ichimoku: '-',
+          ichimokuReason: '',
+          bos: '-',
+          bosReason: ''
         };
         return null;
       }
@@ -542,7 +595,7 @@ app.get('/transactions/view', (req, res) => {
         .slice(-100)
         .reverse();
     }
-    // Tableau des dernières lectures
+    // Tableau des dernières lectures enrichi
     const symbols = config.symbols;
     const readingsTable = `
       <h2>📋 Dernières lectures des symboles</h2>
@@ -551,6 +604,10 @@ app.get('/transactions/view', (req, res) => {
           <th>Symbole</th>
           <th>Dernière lecture</th>
           <th>Valeur relevée</th>
+          <th>Ichimoku</th>
+          <th>Raison Ichimoku</th>
+          <th>BoS</th>
+          <th>Raison BoS</th>
         </tr>
         ${
           symbols.map(sym => {
@@ -559,6 +616,10 @@ app.get('/transactions/view', (req, res) => {
               <td>${sym}</td>
               <td>${reading && reading.timestamp ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
               <td>${reading && reading.value !== undefined ? reading.value : 'sans'}</td>
+              <td style="text-align:center;">${reading && reading.ichimoku === 'OK' ? '✅ OK' : (reading && reading.ichimoku === 'non' ? '❌ non' : '-')}</td>
+              <td style="text-align:center;">${reading && reading.ichimokuReason ? reading.ichimokuReason : '-'}</td>
+              <td style="text-align:center;">${reading && reading.bos === 'OK' ? '✅ OK' : (reading && reading.bos === 'non' ? '❌ non' : '-')}</td>
+              <td style="text-align:center;">${reading && reading.bosReason ? reading.bosReason : '-'}</td>
             </tr>`;
           }).join('')
         }
