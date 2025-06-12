@@ -33,6 +33,7 @@ class IchimokuBot {
       maxDrawdown: 0,
       currentDrawdown: 0
     };
+    this.lastReadings = {}; // Pour le tableau des dernières valeurs lues
   }
 
   async delay(ms = 1000) {
@@ -254,23 +255,24 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
     }
+    // Short : ne pas ajouter d'USDT à l'ouverture.
     if (signal.short && !this.shorts[asset] && this.canOpenNewPosition()) {
       const dynamicRisk = this.getDynamicRisk(atrValue);
       const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
         this.shorts[asset] = {
-  price,
-  atr: atrValue,
-  qty: amount,
-  stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
-  tp1: price - 1 * atrValue,
-  tp2: price - 2 * atrValue,
-  tp1Done: false,
-  entryTime: new Date(),
-  strategy
-};
-       // this.portfolio.USDT += amount * price * 0.999;
+          price,
+          atr: atrValue,
+          qty: amount,
+          stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
+          tp1: price - 1 * atrValue,
+          tp2: price - 2 * atrValue,
+          tp1Done: false,
+          entryTime: new Date(),
+          strategy
+        };
+        // PAS d'ajout d'USDT ici
         this.metrics.totalTrades++;
         this.logTransaction(symbol, 'SHORT', amount, price, null, strategy);
       }
@@ -288,7 +290,7 @@ class IchimokuBot {
         this.portfolio[asset] -= qtyToSell;
         entry.tp1Done = true;
         const pnl = qtyToSell * (currentPrice - entry.price);
-        this.metrics.winningTrades++; // <-- AJOUT
+        this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice, pnl, entry.strategy);
       }
       if (entry.tp1Done && currentPrice >= entry.tp2 && this.portfolio[asset] > 0) {
@@ -296,11 +298,11 @@ class IchimokuBot {
         this.portfolio.USDT += qtyToSell * currentPrice * 0.999;
         this.portfolio[asset] = 0;
         const pnl = qtyToSell * (currentPrice - entry.price);
-        this.metrics.winningTrades++; // <-- AJOUT
+        this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl, entry.strategy);
         delete this.entryPrices[asset];
       }
-      // (Ajoute la même logique pour les shorts si besoin)
+      // (Même logique à ajouter pour les shorts si tu veux)
     } catch (error) {}
   }
 
@@ -335,6 +337,11 @@ class IchimokuBot {
       const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
       const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
       if (!this.isTrending(ohlcvs['1d'])) return null;
+      // --- Stockage de la dernière valeur lue ---
+      this.lastReadings[symbol] = {
+        value: currentPrice,
+        timestamp: new Date()
+      };
       const asset = symbol.split('/')[0];
       if (this.entryPrices[asset]) {
         await this.checkPartialTakeProfit(symbol, currentPrice);
@@ -521,6 +528,28 @@ app.get('/transactions/view', (req, res) => {
         .slice(-100)
         .reverse();
     }
+    // Tableau des dernières lectures
+    const symbols = config.symbols;
+    const readingsTable = `
+      <h2>📋 Dernières lectures des symboles</h2>
+      <table border="1" cellpadding="6" style="background:#222;color:#fff;border-collapse:collapse;">
+        <tr>
+          <th>Symbole</th>
+          <th>Dernière lecture</th>
+          <th>Valeur relevée</th>
+        </tr>
+        ${
+          symbols.map(sym => {
+            const reading = bot && bot.lastReadings && bot.lastReadings[sym];
+            return `<tr>
+              <td>${sym}</td>
+              <td>${reading ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
+              <td>${reading ? reading.value : 'sans'}</td>
+            </tr>`;
+          }).join('')
+        }
+      </table>
+    `;
     const html = `
     <!DOCTYPE html>
     <html>
@@ -547,10 +576,12 @@ app.get('/transactions/view', (req, res) => {
             .position.long { border-left: 3px solid #4CAF50; }
             .position.short { border-left: 3px solid #ff9800; }
             .strategy { color: #00bfff; font-weight: bold; }
+            table { margin-bottom: 30px; }
         </style>
     </head>
     <body>
         <h1>🤖 Bot Ichimoku - Transactions & Positions</h1>
+        ${readingsTable}
         ${bot ? `
         <div class="summary">
             <h2>📊 Statut du Bot</h2>
