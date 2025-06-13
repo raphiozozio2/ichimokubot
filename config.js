@@ -5,18 +5,17 @@ module.exports = {
     'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
     'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
     'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
-    'SOL/USDT', 'BTG/USDT', 'ACH/USDT',
-    'BEL/USDT'
+    'SOL/USDT',  'ACH/USDT',  'BEL/USDT'
   ],
   initialCapital: 1000,
-  riskPercentage: 3,
+  riskPercentage: 30,
   maxPositions: 10,
   maxDrawdown: 20,
   cycleInterval: 60000, // 60s
   timeframes: ['15m', '1h', '4h', '1d'],
   priceValidation: {
     maxSpreadPercent: 0.2,
-    minVolume: 100000
+    minVolume: 10000
   },
   ichimoku: {
     conversionPeriod: 9,
@@ -43,6 +42,6 @@ module.exports = {
     enableRateLimit: true,
     rateLimit: 250,
     retryAttempts: 5,
-    retryDelay: 2000
+    retryDelay: 1000
   }
 };
