@@ -8,9 +8,11 @@ const express = require('express');
 // LOGS GLOBAUX : capte toutes les erreurs fatales et promesses non catchées
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught Exception:', err);
+  // On log mais on n'arrête pas le process
 });
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Unhandled Rejection:', reason);
+  // On log mais on n'arrête pas le process
 });
 
 class IchimokuBot {
@@ -100,7 +102,6 @@ class IchimokuBot {
         console.warn(`[validatePrice] ${symbol} Écart prix trop important: ${spread.toFixed(4)}%`);
         return { valid: false, reason: 'Écart prix trop important' };
       }
-      // Correction ici : on utilise quoteVolume (volume en USDT) et plus baseVolume
       if (!ticker.quoteVolume || ticker.quoteVolume < config.priceValidation.minVolume) {
         console.warn(`[validatePrice] ${symbol} Volume insuffisant: quoteVolume=${ticker.quoteVolume}`);
         return { valid: false, reason: 'Volume insuffisant' };
@@ -169,7 +170,7 @@ class IchimokuBot {
       const last = ichimokuData[ichimokuData.length - 1];
       const lastClose = ohlcv[ohlcv.length - 1][4];
       return (lastClose > last.spanA && lastClose > last.spanB) ||
-             (lastClose < last.spanA && lastClose < last.spanB);
+        (lastClose < last.spanA && lastClose < last.spanB);
     } catch (e) {
       console.error('[isTrending] Erreur:', e);
       return false;
@@ -215,9 +216,8 @@ class IchimokuBot {
     this.metrics.currentDrawdown = Math.max(0, drawdownPercent);
     this.metrics.maxDrawdown = Math.max(this.metrics.maxDrawdown, this.metrics.currentDrawdown);
     if (this.metrics.currentDrawdown > config.maxDrawdown) {
-      console.warn('[Drawdown] Max drawdown dépassé, arrêt du bot');
-      this.stop();
-      return false;
+      console.warn('[Drawdown] Max drawdown dépassé, mais on continue le bot');
+      // On ne stoppe plus le bot !
     }
     return true;
   }
@@ -614,7 +614,6 @@ class IchimokuBot {
 
   getPositions() {
     const positions = [];
-    // Correction 2 : affichage du prix actuel pour les LONG
     for (const [asset, entry] of Object.entries(this.entryPrices)) {
       const symbol = `${asset}/USDT`;
       const currentPrice = this.lastReadings[symbol]?.value || entry.highest || entry.price;
@@ -634,7 +633,6 @@ class IchimokuBot {
         strategy: entry.strategy || 'Non spécifié'
       });
     }
-    // Correction 3 : affichage du prix actuel pour les SHORT
     for (const [asset, short] of Object.entries(this.shorts)) {
       const symbol = `${asset}/USDT`;
       const currentPrice = this.lastReadings[symbol]?.value || short.price;
@@ -683,7 +681,8 @@ class IchimokuBot {
 
   async runCycle() {
     if (!this.isRunning) return;
-    if (!this.updateDrawdown()) return;
+    // On ne stoppe plus sur drawdown
+    this.updateDrawdown();
     console.log(`[runCycle] Démarrage du cycle #${this.cycleCount + 1}`);
     const analysisPromises = config.symbols.map(symbol => this.analyzeSymbol(symbol));
     await Promise.allSettled(analysisPromises);
@@ -749,28 +748,25 @@ app.get('/transactions/view', (req, res) => {
           <th>Raison BoS</th>
           <th>Blocage Ouverture</th>
         </tr>
-        ${
-          symbols.map(sym => {
-            const reading = bot && bot.lastReadings && bot.lastReadings[sym];
-            return `<tr>
+        ${symbols.map(sym => {
+      const reading = bot && bot.lastReadings && bot.lastReadings[sym];
+      return `<tr>
               <td>${sym}</td>
               <td>${reading && reading.timestamp ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
               <td>${reading && reading.value !== undefined ? reading.value : 'sans'}</td>
               <td style="text-align:center;">
-                ${
-                  reading && reading.ichimoku === 'OUI (long)' ? '🟢 OUI (long)' :
-                  reading && reading.ichimoku === 'OUI (short)' ? '🟣 OUI (short)' :
-                  (reading && reading.ichimoku === 'NON' ? '❌ NON' : '-')
-                }
+                ${reading && reading.ichimoku === 'OUI (long)' ? '🟢 OUI (long)' :
+          reading && reading.ichimoku === 'OUI (short)' ? '🟣 OUI (short)' :
+            (reading && reading.ichimoku === 'NON' ? '❌ NON' : '-')
+        }
               </td>
               <td style="text-align:center;">
                 ${reading && reading.ichimokuReason ? reading.ichimokuReason : '-'}
               </td>
               <td style="text-align:center;">
-                ${
-                  reading && reading.bos === 'OUI' ? '🟢 OUI' :
-                  (reading && reading.bos === 'NON' ? '❌ NON' : '-')
-                }
+                ${reading && reading.bos === 'OUI' ? '🟢 OUI' :
+          (reading && reading.bos === 'NON' ? '❌ NON' : '-')
+        }
               </td>
               <td style="text-align:center;">
                 ${reading && reading.bosReason ? reading.bosReason : '-'}
@@ -779,8 +775,8 @@ app.get('/transactions/view', (req, res) => {
                 ${reading && reading.tradeBlockReason ? reading.tradeBlockReason : '-'}
               </td>
 </tr>`;
-          }).join('')
-        }
+    }).join('')
+      }
       </table>
     `;
     const html = `
@@ -826,8 +822,8 @@ app.get('/transactions/view', (req, res) => {
         </div>
         <div class="positions">
             <h2>🎯 Positions Actives</h2>
-            ${bot.getPositions().length > 0 ? 
-              bot.getPositions().map(pos => `
+            ${bot.getPositions().length > 0 ?
+          bot.getPositions().map(pos => `
                 <div class="position ${pos.type.toLowerCase()}">
                     <strong>${pos.symbol}</strong> - ${pos.type} 
                     <span class="type ${pos.type}">${pos.type}</span><br>
@@ -839,9 +835,9 @@ app.get('/transactions/view', (req, res) => {
                     PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span><br>
                     <span class="strategy">Stratégie: ${pos.strategy || 'Non spécifié'}</span>
                 </div>
-              `).join('') 
-              : '<p>Aucune position active</p>'
-            }
+              `).join('')
+          : '<p>Aucune position active</p>'
+        }
         </div>
         ` : ''}
         <div class="summary">
@@ -905,14 +901,13 @@ async function main() {
     console.log(`🌐 Serveur web démarré sur le port ${PORT}`);
     console.log(`📊 Interface: http://localhost:${PORT}/transactions/view`);
   });
-  process.on('SIGINT', () => { if (bot) bot.stop(); process.exit(0); });
-  process.on('uncaughtException', (error) => { if (bot) bot.stop(); process.exit(1); });
-  process.on('unhandledRejection', (reason, promise) => { if (bot) bot.stop(); process.exit(1); });
-  try { await bot.start(); } catch (e) { console.error('[main] Erreur fatale:', e); process.exit(1); }
+  process.on('SIGINT', () => { if (bot) bot.stop(); /* process.exit(0); */ });
+  // Les process.exit sont supprimés pour ne jamais stopper le bot
+  try { await bot.start(); } catch (e) { console.error('[main] Erreur fatale:', e); }
 }
 
 if (require.main === module) {
-  main().catch(error => { console.error('[main] Erreur fatale:', error); process.exit(1); });
+  main().catch(error => { console.error('[main] Erreur fatale:', error); });
 }
 
 module.exports = IchimokuBot;
