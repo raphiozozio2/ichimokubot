@@ -327,6 +327,7 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
     }
+    // --- Correction 1 : déduction du capital SHORT ---
     if (signal.short && !this.shorts[asset]) {
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
@@ -341,6 +342,7 @@ class IchimokuBot {
           entryTime: new Date(),
           strategy
         };
+        this.portfolio.USDT -= maxAmount; // <-- AJOUTÉ ICI
         this.metrics.totalTrades++;
         this.logTransaction(symbol, 'SHORT', amount, price, null, strategy);
       }
@@ -612,9 +614,10 @@ class IchimokuBot {
 
   getPositions() {
     const positions = [];
+    // Correction 2 : affichage du prix actuel pour les LONG
     for (const [asset, entry] of Object.entries(this.entryPrices)) {
       const symbol = `${asset}/USDT`;
-      const currentPrice = entry.highest || entry.price;
+      const currentPrice = this.lastReadings[symbol]?.value || entry.highest || entry.price;
       const pnl = (currentPrice - entry.price) * entry.qty;
       const pnlPercent = ((currentPrice - entry.price) / entry.price) * 100;
       positions.push({
@@ -631,9 +634,10 @@ class IchimokuBot {
         strategy: entry.strategy || 'Non spécifié'
       });
     }
+    // Correction 3 : affichage du prix actuel pour les SHORT
     for (const [asset, short] of Object.entries(this.shorts)) {
       const symbol = `${asset}/USDT`;
-      const currentPrice = short.price;
+      const currentPrice = this.lastReadings[symbol]?.value || short.price;
       const pnl = (short.price - currentPrice) * short.qty;
       const pnlPercent = ((short.price - currentPrice) / short.price) * 100;
       positions.push({
@@ -774,7 +778,7 @@ app.get('/transactions/view', (req, res) => {
               <td style="text-align:center;">
                 ${reading && reading.tradeBlockReason ? reading.tradeBlockReason : '-'}
               </td>
-            </tr>`;
+</tr>`;
           }).join('')
         }
       </table>
