@@ -47,6 +47,7 @@ class IchimokuBot {
       currentDrawdown: 0
     };
     this.lastReadings = {};
+    this.feeRate = 0.001; // 0,1% de frais
   }
 
   async delay(ms = 1000) {
@@ -226,14 +227,21 @@ class IchimokuBot {
     return config.riskPercentage;
   }
 
+  // PATCH DEBUG APPLIQUÉ ICI
   async executeVirtualTrade(symbol, signal, price, atrValue = 0, customRisk = null) {
     const asset = symbol.split('/')[0];
     const minTradeUSD = 10;
     const strategy = signal.strategyTag || signal.strategy || 'Ichimoku';
+    const feeRate = this.feeRate;
+
+    // PATCH DEBUG
+    console.log(`[DEBUG] Tentative ouverture ${signal.short ? 'SHORT' : signal.buy ? 'LONG' : '???'} sur ${symbol} à ${price} USDT`);
+    console.log(`[DEBUG] USDT dispo: ${this.portfolio.USDT}, Positions ouvertes: ${Object.keys(this.entryPrices).length + Object.keys(this.shorts).length}`);
 
     // Validation prix
     const validation = await this.validatePrice(symbol, price);
     if (!validation.valid) {
+      console.log(`[DEBUG] Refus ouverture ${symbol}: validation prix échouée (${validation.reason})`);
       this.lastReadings[symbol].tradeBlockReason = validation.reason;
       return;
     }
@@ -242,35 +250,39 @@ class IchimokuBot {
     const dynamicRisk = this.getDynamicRisk(atrValue);
     const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
     if (maxAmount < minTradeUSD) {
+      console.log(`[DEBUG] Refus ouverture ${symbol}: montant trop faible (${maxAmount} < ${minTradeUSD})`);
       this.lastReadings[symbol].tradeBlockReason = 'Montant trop faible pour trade';
       return;
     }
 
     // Position déjà ouverte
     if (signal.short && this.shorts[asset]) {
+      console.log(`[DEBUG] Refus ouverture ${symbol}: SHORT déjà ouvert`);
       this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
       return;
     }
     if (signal.buy && this.entryPrices[asset]) {
+      console.log(`[DEBUG] Refus ouverture ${symbol}: LONG déjà ouvert`);
       this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
       return;
     }
 
     // Peut-on ouvrir une nouvelle position ?
     if (!this.canOpenNewPosition()) {
+      console.log(`[DEBUG] Refus ouverture ${symbol}: trop de positions ouvertes`);
       this.lastReadings[symbol].tradeBlockReason = 'Trop de positions ouvertes';
       return;
     }
 
     this.lastReadings[symbol].tradeBlockReason = '';
+    console.log(`[DEBUG] OUVERTURE ${signal.buy ? 'LONG' : 'SHORT'} sur ${symbol} à ${price} USDT`);
 
     // --- OUVERTURE TRADE ---
     if (signal.buy) {
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
-        this.portfolio[asset] += amount * 0.999;
+        this.portfolio[asset] += amount * (1 - feeRate);
         this.portfolio.USDT -= maxAmount;
-        const feeRate = 0.001;
         const targetTP1 = price * (1 + 0.02 + feeRate * 2);
         const tp1 = Math.max(targetTP1, price + 1 * atrValue);
         const targetTP2 = price * 1.2;
@@ -296,16 +308,13 @@ class IchimokuBot {
     }
     if (signal.sell && this.portfolio[asset] > 0) {
       const entry = this.entryPrices[asset];
-      const sellValue = this.portfolio[asset] * price * 0.999;
+      const qty = this.portfolio[asset];
+      const sellValue = qty * price * (1 - feeRate);
+      const pnl = sellValue - (entry.qty * entry.price);
       this.portfolio.USDT += sellValue;
-      if (entry) {
-        const pnl = sellValue - (entry.qty * entry.price);
-        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price, pnl, entry.strategy);
-        if (pnl > 0) this.metrics.winningTrades++;
-        else this.metrics.losingTrades++;
-      } else {
-        this.logTransaction(symbol, 'SELL', this.portfolio[asset], price, null, strategy);
-      }
+      this.logTransaction(symbol, 'SELL', qty, price, pnl, entry.strategy);
+      if (pnl > 0) this.metrics.winningTrades++;
+      else this.metrics.losingTrades++;
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
     }
@@ -333,22 +342,25 @@ class IchimokuBot {
   async checkPartialTakeProfit(symbol, currentPrice) {
     const asset = symbol.split('/')[0];
     const entry = this.entryPrices[asset];
+    const feeRate = this.feeRate;
     if (!entry || this.portfolio[asset] === 0) return;
     try {
       if (!entry.tp1Done && currentPrice >= entry.tp1) {
         const qtyToSell = entry.qty * 0.5;
-        this.portfolio.USDT += qtyToSell * currentPrice * 0.999;
+        const sellValue = qtyToSell * currentPrice * (1 - feeRate);
+        this.portfolio.USDT += sellValue;
         this.portfolio[asset] -= qtyToSell;
         entry.tp1Done = true;
-        const pnl = qtyToSell * (currentPrice - entry.price);
+        const pnl = sellValue - (qtyToSell * entry.price);
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice, pnl, entry.strategy);
       }
       if (entry.tp1Done && currentPrice >= entry.tp2 && this.portfolio[asset] > 0) {
         const qtyToSell = this.portfolio[asset];
-        this.portfolio.USDT += qtyToSell * currentPrice * 0.999;
+        const sellValue = qtyToSell * currentPrice * (1 - feeRate);
+        this.portfolio.USDT += sellValue;
         this.portfolio[asset] = 0;
-        const pnl = qtyToSell * (currentPrice - entry.price);
+        const pnl = sellValue - (qtyToSell * entry.price);
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl, entry.strategy);
         delete this.entryPrices[asset];
@@ -359,22 +371,25 @@ class IchimokuBot {
   async checkPartialTakeProfitShort(symbol, currentPrice) {
     const asset = symbol.split('/')[0];
     const short = this.shorts[asset];
+    const feeRate = this.feeRate;
     if (!short || short.qty === 0) return;
     try {
       if (!short.tp1Done && currentPrice <= short.tp1) {
         const qtyToCover = short.qty * 0.5;
-        this.portfolio.USDT += qtyToCover * (short.price - currentPrice);
+        const coverValue = qtyToCover * (short.price - currentPrice) * (1 - feeRate);
+        this.portfolio.USDT += coverValue;
         short.qty -= qtyToCover;
         short.tp1Done = true;
-        const pnl = qtyToCover * (short.price - currentPrice);
+        const pnl = coverValue;
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'COVER1', qtyToCover, currentPrice, pnl, short.strategy);
       }
       if (short.tp1Done && currentPrice <= short.tp2 && short.qty > 0) {
         const qtyToCover = short.qty;
-        this.portfolio.USDT += qtyToCover * (short.price - currentPrice);
+        const coverValue = qtyToCover * (short.price - currentPrice) * (1 - feeRate);
+        this.portfolio.USDT += coverValue;
         short.qty = 0;
-        const pnl = qtyToCover * (short.price - currentPrice);
+        const pnl = coverValue;
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'COVER2', qtyToCover, currentPrice, pnl, short.strategy);
         delete this.shorts[asset];
@@ -496,10 +511,11 @@ class IchimokuBot {
           if (this.entryPrices[asset]) {
             this.updateTrailingStop(asset, currentPrice, currentATR);
             if (currentPrice <= this.entryPrices[asset].trailingStop) {
-              const sellValue = this.portfolio[asset] * currentPrice * 0.999;
+              const qty = this.portfolio[asset];
+              const sellValue = qty * currentPrice * (1 - this.feeRate);
               this.portfolio.USDT += sellValue;
-              const pnl = sellValue - (this.entryPrices[asset].qty * this.entryPrices[asset].price);
-              this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl, this.entryPrices[asset].strategy);
+              const pnl = sellValue - (qty * this.entryPrices[asset].price);
+              this.logTransaction(symbol, 'TRAILING_STOP', qty, currentPrice, pnl, this.entryPrices[asset].strategy);
               this.portfolio[asset] = 0;
               delete this.entryPrices[asset];
             }
@@ -674,7 +690,7 @@ class IchimokuBot {
 // EXPRESS SERVER
 const app = express();
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // Pour parser les formulaires POST
+app.use(express.urlencoded({ extended: true }));
 app.use(express.static('public'));
 let bot = null;
 
@@ -760,6 +776,7 @@ app.get('/transactions/view', (req, res) => {
             .type.SHORT { background: #ff9800; }
             .type.COVER1, .type.COVER2, .type.COVER-FORCE { background: #9c27b0; }
             .type.TP1, .type.TP2 { background: #4CAF50; }
+            .type.FORCED-SELL { background: #607d8b; }
             .timestamp { color: #888; font-size: 12px; }
             .positions { background: #2d2d2d; padding: 15px; margin: 20px 0; border-radius: 8px; }
             .position { background: #444; margin: 5px 0; padding: 10px; border-radius: 4px; }
@@ -844,19 +861,29 @@ app.post('/api/close-position', (req, res) => {
   if (!bot || !symbol) return res.status(400).json({ error: 'Bot ou symbole manquant' });
 
   const asset = symbol.split('/')[0];
+  const feeRate = bot.feeRate;
 
   // Si LONG, vendre immédiatement
   if (bot.entryPrices[asset] && bot.portfolio[asset] > 0) {
-    const price = bot.lastReadings[symbol]?.value || bot.entryPrices[asset].price;
-    bot.executeVirtualTrade(symbol, { sell: true }, price, bot.entryPrices[asset].atr, bot.entryPrices[asset].strategy);
+    const entry = bot.entryPrices[asset];
+    const price = bot.lastReadings[symbol]?.value || entry.price;
+    const qty = bot.portfolio[asset];
+    const sellValue = qty * price * (1 - feeRate);
+    const pnl = sellValue - (entry.qty * entry.price);
+    bot.portfolio.USDT += sellValue;
+    bot.logTransaction(symbol, 'FORCED-SELL', qty, price, pnl, entry.strategy);
+    bot.portfolio[asset] = 0;
+    delete bot.entryPrices[asset];
     return res.redirect('/transactions/view');
   }
   // Si SHORT, couvrir immédiatement
   if (bot.shorts[asset] && bot.shorts[asset].qty > 0) {
-    const price = bot.lastReadings[symbol]?.value || bot.shorts[asset].price;
-    const qtyToCover = bot.shorts[asset].qty;
-    bot.portfolio.USDT += qtyToCover * (bot.shorts[asset].price - price);
-    bot.logTransaction(symbol, 'COVER-FORCE', qtyToCover, price, qtyToCover * (bot.shorts[asset].price - price), bot.shorts[asset].strategy);
+    const short = bot.shorts[asset];
+    const price = bot.lastReadings[symbol]?.value || short.price;
+    const qtyToCover = short.qty;
+    const coverValue = qtyToCover * (short.price - price) * (1 - feeRate);
+    bot.portfolio.USDT += coverValue;
+    bot.logTransaction(symbol, 'COVER-FORCE', qtyToCover, price, coverValue, short.strategy);
     delete bot.shorts[asset];
     return res.redirect('/transactions/view');
   }
