@@ -361,7 +361,6 @@ class IchimokuBot {
     const short = this.shorts[asset];
     if (!short || short.qty === 0) return;
     try {
-      // TP1 pour SHORT : prix <= tp1
       if (!short.tp1Done && currentPrice <= short.tp1) {
         const qtyToCover = short.qty * 0.5;
         this.portfolio.USDT += qtyToCover * (short.price - currentPrice);
@@ -371,7 +370,6 @@ class IchimokuBot {
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'COVER1', qtyToCover, currentPrice, pnl, short.strategy);
       }
-      // TP2 pour SHORT : prix <= tp2
       if (short.tp1Done && currentPrice <= short.tp2 && short.qty > 0) {
         const qtyToCover = short.qty;
         this.portfolio.USDT += qtyToCover * (short.price - currentPrice);
@@ -428,7 +426,6 @@ class IchimokuBot {
         }
         currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
 
-        // Ichimoku enrichi (long/short/non + raison)
         const ichimokuData = this.calculateIchimoku(ohlcvs['1h']);
         let ichimokuSignal = { buy: false, short: false };
         if (!ichimokuData || ichimokuData.length === 0) {
@@ -449,7 +446,6 @@ class IchimokuBot {
           }
         }
 
-        // BoS
         const bosSignal = this.simulateBreakOfStructureSignal(ohlcvs['1h'], currentPrice);
         if (bosSignal.buy && bosSignal.confidence >= 0.7) {
           bosStatus = 'OUI';
@@ -678,6 +674,7 @@ class IchimokuBot {
 // EXPRESS SERVER
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // Pour parser les formulaires POST
 app.use(express.static('public'));
 let bot = null;
 
@@ -761,7 +758,7 @@ app.get('/transactions/view', (req, res) => {
             .type.BUY { background: #4CAF50; }
             .type.SELL { background: #f44336; }
             .type.SHORT { background: #ff9800; }
-            .type.COVER1, .type.COVER2 { background: #9c27b0; }
+            .type.COVER1, .type.COVER2, .type.COVER-FORCE { background: #9c27b0; }
             .type.TP1, .type.TP2 { background: #4CAF50; }
             .timestamp { color: #888; font-size: 12px; }
             .positions { background: #2d2d2d; padding: 15px; margin: 20px 0; border-radius: 8px; }
@@ -770,6 +767,9 @@ app.get('/transactions/view', (req, res) => {
             .position.short { border-left: 3px solid #ff9800; }
             .strategy { color: #00bfff; font-weight: bold; }
             table { margin-bottom: 30px; }
+            form.force-sell { display: inline; }
+            button.force-sell-btn { margin-left: 10px; background: #f44336; color: #fff; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; }
+            button.force-sell-btn:hover { background: #c62828; }
         </style>
     </head>
     <body>
@@ -794,13 +794,13 @@ app.get('/transactions/view', (req, res) => {
                     Prix d'entrée: ${pos.entryPrice.toFixed(6)} | 
                     Prix actuel: ${pos.currentPrice.toFixed(6)} | 
                     Quantité: ${pos.quantity.toFixed(6)}<br>
-                    ${
-                      pos.type === 'LONG'
-                        ? `TP1: ${(pos.tp1).toFixed(6)} | TP2: ${(pos.tp2).toFixed(6)}`
-                        : `TP1: ${(pos.tp1).toFixed(6)} | TP2: ${(pos.tp2).toFixed(6)}`
-                    }<br>
+                    TP1: ${(pos.tp1).toFixed(6)} | TP2: ${(pos.tp2).toFixed(6)}<br>
                     PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span><br>
                     <span class="strategy">Stratégie: ${pos.strategy || 'Non spécifié'}</span>
+                    <form class="force-sell" method="POST" action="/api/close-position">
+                      <input type="hidden" name="symbol" value="${pos.symbol}">
+                      <button type="submit" class="force-sell-btn">Forcer la vente</button>
+                    </form>
                 </div>
               `).join('') 
               : '<p>Aucune position active</p>'
@@ -837,6 +837,30 @@ app.get('/transactions/view', (req, res) => {
   } catch (error) {
     res.status(500).send(`Erreur: ${error.message}`);
   }
+});
+
+app.post('/api/close-position', (req, res) => {
+  const symbol = req.body.symbol;
+  if (!bot || !symbol) return res.status(400).json({ error: 'Bot ou symbole manquant' });
+
+  const asset = symbol.split('/')[0];
+
+  // Si LONG, vendre immédiatement
+  if (bot.entryPrices[asset] && bot.portfolio[asset] > 0) {
+    const price = bot.lastReadings[symbol]?.value || bot.entryPrices[asset].price;
+    bot.executeVirtualTrade(symbol, { sell: true }, price, bot.entryPrices[asset].atr, bot.entryPrices[asset].strategy);
+    return res.redirect('/transactions/view');
+  }
+  // Si SHORT, couvrir immédiatement
+  if (bot.shorts[asset] && bot.shorts[asset].qty > 0) {
+    const price = bot.lastReadings[symbol]?.value || bot.shorts[asset].price;
+    const qtyToCover = bot.shorts[asset].qty;
+    bot.portfolio.USDT += qtyToCover * (bot.shorts[asset].price - price);
+    bot.logTransaction(symbol, 'COVER-FORCE', qtyToCover, price, qtyToCover * (bot.shorts[asset].price - price), bot.shorts[asset].strategy);
+    delete bot.shorts[asset];
+    return res.redirect('/transactions/view');
+  }
+  return res.redirect('/transactions/view');
 });
 
 app.get('/api/status', (req, res) => { if (!bot) return res.json({ isRunning: false }); res.json(bot.getStatus()); });
