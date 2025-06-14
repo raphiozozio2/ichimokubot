@@ -1,67 +1,202 @@
-module.exports = {
-  mode: 'live',
-  initialCapital: 1000,
-  cycleInterval: 300000, // 5 minutes
-  exchange: 'binance',
-  symbols: [
-    'BTC/USDT', 'ETH/USDT',
-    'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
-    'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
-    'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
-    'SOL/USDT', 'BTG/USDT', 'ACH/USDT',
-    'BEL/USDT'
-  ],
-  timeframes: ['15m', '1h', '4h', '1d'],
-  backtest: {
-    startDate: '2020-01-01',
-    endDate: '2024-01-01'
-  },
-  riskPercentage: 2,
-  maxPositions: 10,
-  maxDrawdown: 20,
-  dynamicSizing: {
-    atrThreshold: 50,
-    riskReduction: 0.5
-  },
-  ichimoku: {
-    conversionPeriod: 9,
-    basePeriod: 26,
-    spanPeriod: 52,
-    displacement: 26
-  },
-  stopLoss: {
-    atrMultiplier: 1.5,
-    atrPeriod: 14
-  },
-  trailing: {
-    atrMultiplier: 1.0
-  },
-  takeProfit: {
-    atrMultipliers: [1, 2],
-    ratios: [0.5, 0.5],
-    target: 0.15,
-    trailing: true
-  },
-  shorting: {
-    maxExposure: 0.3,
-    hedgeRatio: 0.5
-  },
-  antiRange: {
-    adxPeriod: 14,
-    adxThreshold: 25
-  },
-  apiSettings: {
-    rateLimit: 1200,
-    enableRateLimit: true,
-    retryAttempts: 3,
-    retryDelay: 2000
-  },
-  priceValidation: {
-    maxSpreadPercent: 0.2,
-    minVolume: 1000
-  },
-  combinedSignal: {
-    confidenceThreshold: 0.7,
-    riskMultiplier: 2
+const ccxt = require('ccxt');
+const { ichimokucloud, atr, adx } = require('technicalindicators');
+const config = require('./config');
+require('dotenv').config();
+const fs = require('fs');
+const express = require('express');
+
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection:', reason);
+});
+
+class IchimokuBot {
+  constructor() {
+    try {
+      this.exchange = new ccxt[config.exchange]({
+        apiKey: process.env.BINANCE_API_KEY,
+        secret: process.env.BINANCE_API_SECRET,
+        enableRateLimit: config.apiSettings.enableRateLimit,
+        rateLimit: config.apiSettings.rateLimit,
+        timeout: 30000
+      });
+      console.log('[INIT] Exchange initialisé avec succès');
+    } catch (e) {
+      console.error('[INIT] Erreur lors de l\'initialisation de l\'exchange:', e);
+    }
+
+    this.portfolio = { USDT: config.initialCapital, history: [] };
+    config.symbols.forEach(symbol => {
+      const asset = symbol.split('/')[0];
+      this.portfolio[asset] = 0;
+    });
+
+    this.entryPrices = {};
+    this.shorts = {};
+    this.isRunning = false;
+    this.cycleCount = 0;
+    this.lastAnalysisErrors = {};
+    this.initialCapital = config.initialCapital;
+    this.startTime = Date.now();
+    this.metrics = {
+      totalTrades: 0,
+      winningTrades: 0,
+      losingTrades: 0,
+      maxDrawdown: 0,
+      currentDrawdown: 0
+    };
+    this.lastReadings = {};
   }
-};
+
+  async delay(ms = 1000) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async retryApiCall(apiCall, maxRetries = config.apiSettings.retryAttempts) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await apiCall();
+      } catch (error) {
+        console.error(`[API] Tentative ${attempt} échouée:`, error.message || error);
+        if (attempt === maxRetries) throw error;
+        await this.delay(config.apiSettings.retryDelay * Math.pow(2, attempt - 1));
+      }
+    }
+  }
+
+  async fetchMultiTimeframeOHLCV(symbol) {
+    const results = {};
+    for (const tf of config.timeframes) {
+      try {
+        const apiCall = async () => {
+          const ohlcv = await this.exchange.fetchOHLCV(
+            symbol,
+            tf,
+            undefined,
+            Math.max(config.ichimoku.spanPeriod * 3, 100)
+          );
+          if (!ohlcv || ohlcv.length < config.ichimoku.spanPeriod) {
+            throw new Error(`Données insuffisantes: ${ohlcv?.length || 0}/${config.ichimoku.spanPeriod}`);
+          }
+          return ohlcv;
+        };
+        results[tf] = await this.retryApiCall(apiCall);
+        await this.delay(200);
+      } catch (e) {
+        console.error(`[OHLCV] ${symbol} (${tf}) : ${e.message || e}`);
+        throw e;
+      }
+    }
+    return results;
+  }
+
+  validatePrice = async (symbol, price) => {
+    try {
+      const ticker = await this.retryApiCall(async () => await this.exchange.fetchTicker(symbol));
+      const spread = Math.abs(ticker.last - price) / ticker.last * 100;
+      if (spread > config.priceValidation.maxSpreadPercent) {
+        return { valid: false, reason: 'Écart prix trop important' };
+      }
+      if (!ticker.quoteVolume || ticker.quoteVolume < config.priceValidation.minVolume) {
+        return { valid: false, reason: 'Volume insuffisant' };
+      }
+      return { valid: true, reason: '' };
+    } catch (err) {
+      return { valid: false, reason: 'Validation prix échouée' };
+    }
+  }
+  calculateIchimoku(ohlcv) {
+    if (!ohlcv || ohlcv.length < config.ichimoku.spanPeriod) return null;
+    return ichimokucloud({
+      high: ohlcv.map(c => c[2]),
+      low: ohlcv.map(c => c[3]),
+      conversionPeriod: config.ichimoku.conversionPeriod,
+      basePeriod: config.ichimoku.basePeriod,
+      spanPeriod: config.ichimoku.spanPeriod,
+      displacement: config.ichimoku.displacement
+    });
+  }
+
+  calculateATR(ohlcv, period = 14) {
+    if (!ohlcv || ohlcv.length < period) return [];
+    return atr({
+      high: ohlcv.map(c => c[2]),
+      low: ohlcv.map(c => c[3]),
+      close: ohlcv.map(c => c[4]),
+      period
+    });
+  }
+
+  calculateADX(ohlcv, period = 14) {
+    if (!ohlcv || ohlcv.length < period * 2) return [];
+    return adx({
+      high: ohlcv.map(c => c[2]),
+      low: ohlcv.map(c => c[3]),
+      close: ohlcv.map(c => c[4]),
+      period
+    });
+  }
+
+  generateSignal(ichimokuData, price) {
+    if (!ichimokuData || ichimokuData.length === 0) return { buy: false, sell: false, short: false };
+    const last = ichimokuData[ichimokuData.length - 1];
+    const inCloud = price > last.spanA && price > last.spanB;
+    return {
+      buy: inCloud && price > last.conversion && last.conversion > last.base,
+      sell: !inCloud && price < last.conversion,
+      short: !inCloud && price < last.conversion && price < last.spanA
+    };
+  }
+
+  simulateBreakOfStructureSignal(ohlcv, price) {
+    const recentHighs = ohlcv.slice(-10).map(c => c[2]);
+    const recentLows = ohlcv.slice(-10).map(c => c[3]);
+    const maxHigh = Math.max(...recentHighs);
+    const minLow = Math.min(...recentLows);
+    const breakoutUp = price > maxHigh;
+    const breakoutDown = price < minLow;
+    const confidence = breakoutUp || breakoutDown ? 0.8 : 0.3;
+    return { buy: breakoutUp, sell: breakoutDown, confidence };
+  }
+
+  isTrending(ohlcv) {
+    const adxValues = this.calculateADX(ohlcv, config.antiRange.adxPeriod);
+    const lastAdx = adxValues.length > 0 ? adxValues[adxValues.length - 1].adx : 0;
+    if (lastAdx < config.antiRange.adxThreshold) return false;
+
+    const ichimokuData = this.calculateIchimoku(ohlcv);
+    if (!ichimokuData || ichimokuData.length === 0) return false;
+
+    const last = ichimokuData[ichimokuData.length - 1];
+    const close = ohlcv[ohlcv.length - 1][4];
+
+    return (close > last.spanA && close > last.spanB) ||
+           (close < last.spanA && close < last.spanB);
+  }
+
+  getDynamicRisk(atrValue) {
+    if (!atrValue) return config.riskPercentage;
+    if (atrValue > config.dynamicSizing.atrThreshold) {
+      return config.riskPercentage * config.dynamicSizing.riskReduction;
+    }
+    return config.riskPercentage;
+  }
+
+  canOpenNewPosition() {
+    const current = Object.keys(this.entryPrices).length + Object.keys(this.shorts).length;
+    return current < config.maxPositions;
+  }
+
+  updateDrawdown() {
+    const value = this.getTotalValue();
+    const drawdown = (this.initialCapital - value) / this.initialCapital * 100;
+    this.metrics.currentDrawdown = Math.max(0, drawdown);
+    this.metrics.maxDrawdown = Math.max(this.metrics.maxDrawdown, drawdown);
+    if (this.metrics.currentDrawdown > config.maxDrawdown) {
+      this.stop();
+      return false;
+    }
+    return true;
+  }

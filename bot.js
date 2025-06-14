@@ -8,11 +8,9 @@ const express = require('express');
 // LOGS GLOBAUX : capte toutes les erreurs fatales et promesses non catchées
 process.on('uncaughtException', (err) => {
   console.error('[FATAL] Uncaught Exception:', err);
-  // On log mais on n'arrête pas le process
 });
 process.on('unhandledRejection', (reason, promise) => {
   console.error('[FATAL] Unhandled Rejection:', reason);
-  // On log mais on n'arrête pas le process
 });
 
 class IchimokuBot {
@@ -96,19 +94,15 @@ class IchimokuBot {
   async validatePrice(symbol, price) {
     try {
       const ticker = await this.retryApiCall(async () => await this.exchange.fetchTicker(symbol));
-      console.log(`[validatePrice] ${symbol} ticker:`, ticker);
       const spread = Math.abs(ticker.last - price) / ticker.last * 100;
       if (spread > config.priceValidation.maxSpreadPercent) {
-        console.warn(`[validatePrice] ${symbol} Écart prix trop important: ${spread.toFixed(4)}%`);
         return { valid: false, reason: 'Écart prix trop important' };
       }
       if (!ticker.quoteVolume || ticker.quoteVolume < config.priceValidation.minVolume) {
-        console.warn(`[validatePrice] ${symbol} Volume insuffisant: quoteVolume=${ticker.quoteVolume}`);
         return { valid: false, reason: 'Volume insuffisant' };
       }
       return { valid: true, reason: '' };
     } catch (err) {
-      console.error(`[validatePrice] ${symbol} Erreur récupération ticker:`, err.message || err);
       return { valid: false, reason: 'Validation prix échouée' };
     }
   }
@@ -125,7 +119,6 @@ class IchimokuBot {
         displacement: config.ichimoku.displacement
       });
     } catch (e) {
-      console.error('[Ichimoku] Erreur calcul:', e);
       return null;
     }
   }
@@ -140,7 +133,6 @@ class IchimokuBot {
         period
       });
     } catch (e) {
-      console.error('[ATR] Erreur calcul:', e);
       return [];
     }
   }
@@ -155,7 +147,6 @@ class IchimokuBot {
         period
       });
     } catch (e) {
-      console.error('[ADX] Erreur calcul:', e);
       return [];
     }
   }
@@ -170,9 +161,8 @@ class IchimokuBot {
       const last = ichimokuData[ichimokuData.length - 1];
       const lastClose = ohlcv[ohlcv.length - 1][4];
       return (lastClose > last.spanA && lastClose > last.spanB) ||
-        (lastClose < last.spanA && lastClose < last.spanB);
+             (lastClose < last.spanA && lastClose < last.spanB);
     } catch (e) {
-      console.error('[isTrending] Erreur:', e);
       return false;
     }
   }
@@ -188,7 +178,6 @@ class IchimokuBot {
         short: !inCloud && currentPrice < last.conversion && currentPrice < last.spanA
       };
     } catch (e) {
-      console.error('[generateSignal] Erreur:', e);
       return { buy: false, sell: false, short: false };
     }
   }
@@ -217,7 +206,6 @@ class IchimokuBot {
     this.metrics.maxDrawdown = Math.max(this.metrics.maxDrawdown, this.metrics.currentDrawdown);
     if (this.metrics.currentDrawdown > config.maxDrawdown) {
       console.warn('[Drawdown] Max drawdown dépassé, mais on continue le bot');
-      // On ne stoppe plus le bot !
     }
     return true;
   }
@@ -247,7 +235,6 @@ class IchimokuBot {
     const validation = await this.validatePrice(symbol, price);
     if (!validation.valid) {
       this.lastReadings[symbol].tradeBlockReason = validation.reason;
-      console.warn(`[TRADE] ${symbol} refusé : ${validation.reason}`);
       return;
     }
 
@@ -256,31 +243,26 @@ class IchimokuBot {
     const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
     if (maxAmount < minTradeUSD) {
       this.lastReadings[symbol].tradeBlockReason = 'Montant trop faible pour trade';
-      console.warn(`[TRADE] ${symbol} refusé : Montant trop faible pour trade`);
       return;
     }
 
     // Position déjà ouverte
     if (signal.short && this.shorts[asset]) {
       this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
-      console.warn(`[TRADE] ${symbol} refusé : Position déjà ouverte`);
       return;
     }
     if (signal.buy && this.entryPrices[asset]) {
       this.lastReadings[symbol].tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
-      console.warn(`[TRADE] ${symbol} refusé : Position déjà ouverte`);
       return;
     }
 
     // Peut-on ouvrir une nouvelle position ?
     if (!this.canOpenNewPosition()) {
       this.lastReadings[symbol].tradeBlockReason = 'Trop de positions ouvertes';
-      console.warn(`[TRADE] ${symbol} refusé : Trop de positions ouvertes`);
       return;
     }
 
     this.lastReadings[symbol].tradeBlockReason = '';
-    console.log(`[TRADE] ${symbol} OUVERTURE ${signal.buy ? 'LONG' : 'SHORT'} à ${price} USDT`);
 
     // --- OUVERTURE TRADE ---
     if (signal.buy) {
@@ -327,7 +309,6 @@ class IchimokuBot {
       this.portfolio[asset] = 0;
       delete this.entryPrices[asset];
     }
-    // --- Correction 1 : déduction du capital SHORT ---
     if (signal.short && !this.shorts[asset]) {
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
@@ -342,7 +323,7 @@ class IchimokuBot {
           entryTime: new Date(),
           strategy
         };
-        this.portfolio.USDT -= maxAmount; // <-- AJOUTÉ ICI
+        this.portfolio.USDT -= maxAmount;
         this.metrics.totalTrades++;
         this.logTransaction(symbol, 'SHORT', amount, price, null, strategy);
       }
@@ -362,7 +343,6 @@ class IchimokuBot {
         const pnl = qtyToSell * (currentPrice - entry.price);
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP1', qtyToSell, currentPrice, pnl, entry.strategy);
-        console.log(`[TP1] ${symbol} pris à ${currentPrice}`);
       }
       if (entry.tp1Done && currentPrice >= entry.tp2 && this.portfolio[asset] > 0) {
         const qtyToSell = this.portfolio[asset];
@@ -372,11 +352,36 @@ class IchimokuBot {
         this.metrics.winningTrades++;
         this.logTransaction(symbol, 'TP2', qtyToSell, currentPrice, pnl, entry.strategy);
         delete this.entryPrices[asset];
-        console.log(`[TP2] ${symbol} pris à ${currentPrice}`);
       }
-    } catch (error) {
-      console.error(`[TP] Erreur sur ${symbol}:`, error);
-    }
+    } catch (error) {}
+  }
+
+  async checkPartialTakeProfitShort(symbol, currentPrice) {
+    const asset = symbol.split('/')[0];
+    const short = this.shorts[asset];
+    if (!short || short.qty === 0) return;
+    try {
+      // TP1 pour SHORT : prix <= tp1
+      if (!short.tp1Done && currentPrice <= short.tp1) {
+        const qtyToCover = short.qty * 0.5;
+        this.portfolio.USDT += qtyToCover * (short.price - currentPrice);
+        short.qty -= qtyToCover;
+        short.tp1Done = true;
+        const pnl = qtyToCover * (short.price - currentPrice);
+        this.metrics.winningTrades++;
+        this.logTransaction(symbol, 'COVER1', qtyToCover, currentPrice, pnl, short.strategy);
+      }
+      // TP2 pour SHORT : prix <= tp2
+      if (short.tp1Done && currentPrice <= short.tp2 && short.qty > 0) {
+        const qtyToCover = short.qty;
+        this.portfolio.USDT += qtyToCover * (short.price - currentPrice);
+        short.qty = 0;
+        const pnl = qtyToCover * (short.price - currentPrice);
+        this.metrics.winningTrades++;
+        this.logTransaction(symbol, 'COVER2', qtyToCover, currentPrice, pnl, short.strategy);
+        delete this.shorts[asset];
+      }
+    } catch (error) {}
   }
 
   logTransaction(symbol, type, amount, price, pnl = null, strategy = null) {
@@ -399,9 +404,7 @@ class IchimokuBot {
     this.portfolio.history.push(logEntry);
     try {
       fs.appendFileSync('transactions.log', JSON.stringify(logEntry) + '\n');
-    } catch (e) {
-      console.error('[logTransaction] Erreur écriture log:', e);
-    }
+    } catch (e) {}
   }
 
   async analyzeSymbol(symbol) {
@@ -421,7 +424,6 @@ class IchimokuBot {
             bosReason: '',
             tradeBlockReason: 'Erreur API ou données'
           };
-          console.warn(`[analyzeSymbol] ${symbol} : Pas de données OHLCV`);
           return null;
         }
         currentPrice = ohlcvs['15m'][ohlcvs['15m'].length - 1][4];
@@ -437,27 +439,13 @@ class IchimokuBot {
           const last = ichimokuData[ichimokuData.length - 1];
           if (ichimokuSignal.buy) {
             ichimokuStatus = 'OUI (long)';
-            if (currentPrice > last.spanA && currentPrice > last.spanB && currentPrice > last.conversion && last.conversion > last.base) {
-              ichimokuReason = 'prix au-dessus nuage et croisement';
-            } else {
-              ichimokuReason = 'conditions long';
-            }
+            ichimokuReason = 'prix au-dessus nuage et croisement';
           } else if (ichimokuSignal.short) {
             ichimokuStatus = 'OUI (short)';
-            if (currentPrice < last.spanA && currentPrice < last.spanB && currentPrice < last.conversion) {
-              ichimokuReason = 'prix sous nuage';
-            } else {
-              ichimokuReason = 'conditions short';
-            }
+            ichimokuReason = 'prix sous nuage';
           } else {
-            if (currentPrice < last.spanA || currentPrice < last.spanB) {
-              ichimokuReason = 'prix sous nuage';
-            } else if (!(currentPrice > last.conversion && last.conversion > last.base)) {
-              ichimokuReason = 'pas de croisement';
-            } else {
-              ichimokuReason = 'autre';
-            }
             ichimokuStatus = 'NON';
+            ichimokuReason = 'autre';
           }
         }
 
@@ -467,20 +455,11 @@ class IchimokuBot {
           bosStatus = 'OUI';
           bosReason = 'breakout validé';
         } else {
-          if (!bosSignal.buy) {
-            bosReason = 'pas de breakout';
-          } else if (bosSignal.confidence < 0.7) {
-            bosReason = 'confiance faible';
-          } else {
-            bosReason = 'autre';
-          }
           bosStatus = 'NON';
+          bosReason = 'pas de breakout';
         }
 
-        // Initialisation de la raison de blocage
         tradeBlockReason = '';
-
-        // Vérification position déjà ouverte
         const asset = symbol.split('/')[0];
         if (ichimokuSignal.short && this.shorts[asset]) {
           tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
@@ -489,28 +468,22 @@ class IchimokuBot {
           tradeBlockReason = `Position déjà ouverte sur ${symbol}`;
         }
 
-        // Validation du prix
         const atrValues = this.calculateATR(ohlcvs['1h'], config.stopLoss.atrPeriod);
         const currentATR = atrValues.length > 0 ? atrValues[atrValues.length - 1] : 0;
         const validation = await this.validatePrice(symbol, currentPrice);
         if (!validation.valid) {
           tradeBlockReason = validation.reason;
         }
-
-        // Taille min trade
         const minTradeUSD = 10;
         const dynamicRisk = this.getDynamicRisk(currentATR);
         const maxAmount = this.portfolio.USDT * (dynamicRisk / 100);
         if (maxAmount < minTradeUSD) {
           tradeBlockReason = 'Montant trop faible pour trade';
         }
-
-        // Trop de positions ouvertes
         if (!this.canOpenNewPosition()) {
           tradeBlockReason = 'Trop de positions ouvertes';
         }
 
-        // Enregistre tout dans lastReadings
         this.lastReadings[symbol] = {
           value: currentPrice,
           timestamp: new Date(),
@@ -533,17 +506,15 @@ class IchimokuBot {
               this.logTransaction(symbol, 'TRAILING_STOP', this.portfolio[asset], currentPrice, pnl, this.entryPrices[asset].strategy);
               this.portfolio[asset] = 0;
               delete this.entryPrices[asset];
-              console.log(`[TRAILING_STOP] ${symbol} sorti à ${currentPrice}`);
             }
           }
           return null;
         }
         if (this.shorts[asset]) {
-          await this.checkPartialTakeProfit(symbol, currentPrice);
+          await this.checkPartialTakeProfitShort(symbol, currentPrice);
           return null;
         }
 
-        // --- Exécution PARALLÈLE des stratégies ---
         if (!tradeBlockReason) {
           if (ichimokuSignal.buy) {
             await this.executeVirtualTrade(symbol, { buy: true, strategyTag: 'Ichimoku' }, currentPrice, currentATR, config.riskPercentage);
@@ -566,11 +537,9 @@ class IchimokuBot {
           bosReason: '',
           tradeBlockReason: 'Erreur API ou données'
         };
-        console.error(`[analyzeSymbol] ${symbol} : Erreur API ou données`, err.message || err);
         return null;
       }
     } catch (error) {
-      console.error(`[analyzeSymbol] ${symbol} : Erreur fatale`, error);
       return null;
     }
   }
@@ -629,7 +598,8 @@ class IchimokuBot {
         pnlPercent,
         entryTime: entry.entryTime ? entry.entryTime.toISOString() : new Date().toISOString(),
         stopLoss: entry.stopLoss,
-        takeProfit: entry.tp2,
+        tp1: entry.tp1,
+        tp2: entry.tp2,
         strategy: entry.strategy || 'Non spécifié'
       });
     }
@@ -648,7 +618,8 @@ class IchimokuBot {
         pnlPercent,
         entryTime: short.entryTime ? short.entryTime.toISOString() : new Date().toISOString(),
         stopLoss: short.stopLoss,
-        takeProfit: short.tp2,
+        tp1: short.tp1,
+        tp2: short.tp2,
         strategy: short.strategy || 'Non spécifié'
       });
     }
@@ -670,9 +641,7 @@ class IchimokuBot {
           .reverse();
         return transactions;
       }
-    } catch (e) {
-      console.error('[getTransactions] Erreur lecture log:', e);
-    }
+    } catch (e) {}
     if (this.portfolio.history && this.portfolio.history.length > 0) {
       return this.portfolio.history.slice(-50).reverse();
     }
@@ -681,35 +650,28 @@ class IchimokuBot {
 
   async runCycle() {
     if (!this.isRunning) return;
-    // On ne stoppe plus sur drawdown
     this.updateDrawdown();
-    console.log(`[runCycle] Démarrage du cycle #${this.cycleCount + 1}`);
     const analysisPromises = config.symbols.map(symbol => this.analyzeSymbol(symbol));
     await Promise.allSettled(analysisPromises);
     this.cycleCount++;
-    console.log(`[runCycle] Fin du cycle #${this.cycleCount}`);
   }
 
   async start() {
     if (this.isRunning) return;
     this.isRunning = true;
     this.startTime = Date.now();
-    console.log('[START] Bot démarré');
     while (this.isRunning) {
       try {
         await this.runCycle();
         if (this.isRunning) await this.delay(config.cycleInterval);
       } catch (e) {
-        console.error('[START] Erreur dans la boucle principale:', e);
         await this.delay(5000);
       }
     }
-    console.log('[STOP] Bot arrêté');
   }
 
   stop() {
     this.isRunning = false;
-    console.log('[STOP] Arrêt demandé');
   }
 }
 
@@ -733,7 +695,6 @@ app.get('/transactions/view', (req, res) => {
         .slice(-100)
         .reverse();
     }
-    // Tableau des dernières lectures enrichi
     const symbols = config.symbols;
     const readingsTable = `
       <h2>📋 Dernières lectures des symboles</h2>
@@ -748,25 +709,28 @@ app.get('/transactions/view', (req, res) => {
           <th>Raison BoS</th>
           <th>Blocage Ouverture</th>
         </tr>
-        ${symbols.map(sym => {
-      const reading = bot && bot.lastReadings && bot.lastReadings[sym];
-      return `<tr>
+        ${
+          symbols.map(sym => {
+            const reading = bot && bot.lastReadings && bot.lastReadings[sym];
+            return `<tr>
               <td>${sym}</td>
               <td>${reading && reading.timestamp ? new Date(reading.timestamp).toLocaleString('fr-FR') : 'sans'}</td>
               <td>${reading && reading.value !== undefined ? reading.value : 'sans'}</td>
               <td style="text-align:center;">
-                ${reading && reading.ichimoku === 'OUI (long)' ? '🟢 OUI (long)' :
-          reading && reading.ichimoku === 'OUI (short)' ? '🟣 OUI (short)' :
-            (reading && reading.ichimoku === 'NON' ? '❌ NON' : '-')
-        }
+                ${
+                  reading && reading.ichimoku === 'OUI (long)' ? '🟢 OUI (long)' :
+                  reading && reading.ichimoku === 'OUI (short)' ? '🟣 OUI (short)' :
+                  (reading && reading.ichimoku === 'NON' ? '❌ NON' : '-')
+                }
               </td>
               <td style="text-align:center;">
                 ${reading && reading.ichimokuReason ? reading.ichimokuReason : '-'}
               </td>
               <td style="text-align:center;">
-                ${reading && reading.bos === 'OUI' ? '🟢 OUI' :
-          (reading && reading.bos === 'NON' ? '❌ NON' : '-')
-        }
+                ${
+                  reading && reading.bos === 'OUI' ? '🟢 OUI' :
+                  (reading && reading.bos === 'NON' ? '❌ NON' : '-')
+                }
               </td>
               <td style="text-align:center;">
                 ${reading && reading.bosReason ? reading.bosReason : '-'}
@@ -775,8 +739,8 @@ app.get('/transactions/view', (req, res) => {
                 ${reading && reading.tradeBlockReason ? reading.tradeBlockReason : '-'}
               </td>
 </tr>`;
-    }).join('')
-      }
+          }).join('')
+        }
       </table>
     `;
     const html = `
@@ -822,22 +786,25 @@ app.get('/transactions/view', (req, res) => {
         </div>
         <div class="positions">
             <h2>🎯 Positions Actives</h2>
-            ${bot.getPositions().length > 0 ?
-          bot.getPositions().map(pos => `
+            ${bot.getPositions().length > 0 ? 
+              bot.getPositions().map(pos => `
                 <div class="position ${pos.type.toLowerCase()}">
                     <strong>${pos.symbol}</strong> - ${pos.type} 
                     <span class="type ${pos.type}">${pos.type}</span><br>
                     Prix d'entrée: ${pos.entryPrice.toFixed(6)} | 
                     Prix actuel: ${pos.currentPrice.toFixed(6)} | 
                     Quantité: ${pos.quantity.toFixed(6)}<br>
-                    TP1: ${(pos.entryPrice * 1.022).toFixed(6)} | 
-                    TP2: ${(pos.entryPrice * 1.2).toFixed(6)}<br>
+                    ${
+                      pos.type === 'LONG'
+                        ? `TP1: ${(pos.tp1).toFixed(6)} | TP2: ${(pos.tp2).toFixed(6)}`
+                        : `TP1: ${(pos.tp1).toFixed(6)} | TP2: ${(pos.tp2).toFixed(6)}`
+                    }<br>
                     PnL: <span class="${pos.pnl >= 0 ? 'profit' : 'loss'}">${pos.pnl.toFixed(2)} USDT (${pos.pnlPercent.toFixed(2)}%)</span><br>
                     <span class="strategy">Stratégie: ${pos.strategy || 'Non spécifié'}</span>
                 </div>
-              `).join('')
-          : '<p>Aucune position active</p>'
-        }
+              `).join('') 
+              : '<p>Aucune position active</p>'
+            }
         </div>
         ` : ''}
         <div class="summary">
@@ -868,7 +835,6 @@ app.get('/transactions/view', (req, res) => {
     `;
     res.send(html);
   } catch (error) {
-    console.error('[Express] Erreur /transactions/view:', error);
     res.status(500).send(`Erreur: ${error.message}`);
   }
 });
@@ -884,7 +850,6 @@ app.post('/api/start', async (req, res) => {
     await bot.start();
     res.json({ success: true, message: 'Bot démarré' });
   } catch (error) {
-    console.error('[Express] Erreur /api/start:', error);
     res.json({ error: error.message });
   }
 });
@@ -901,13 +866,12 @@ async function main() {
     console.log(`🌐 Serveur web démarré sur le port ${PORT}`);
     console.log(`📊 Interface: http://localhost:${PORT}/transactions/view`);
   });
-  process.on('SIGINT', () => { if (bot) bot.stop(); /* process.exit(0); */ });
-  // Les process.exit sont supprimés pour ne jamais stopper le bot
-  try { await bot.start(); } catch (e) { console.error('[main] Erreur fatale:', e); }
+  process.on('SIGINT', () => { if (bot) bot.stop(); });
+  try { await bot.start(); } catch (e) {}
 }
 
 if (require.main === module) {
-  main().catch(error => { console.error('[main] Erreur fatale:', error); });
+  main().catch(error => {});
 }
 
 module.exports = IchimokuBot;
