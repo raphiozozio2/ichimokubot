@@ -237,7 +237,13 @@ class IchimokuBot {
     // PATCH DEBUG
     console.log(`[DEBUG] Tentative ouverture ${signal.short ? 'SHORT' : signal.buy ? 'LONG' : '???'} sur ${symbol} à ${price} USDT`);
     console.log(`[DEBUG] USDT dispo: ${this.portfolio.USDT}, Positions ouvertes: ${Object.keys(this.entryPrices).length + Object.keys(this.shorts).length}`);
-
+if (symbol === 'BTC/USDT') {
+  console.log('[DEBUG][BTC] Tentative ouverture LONG, USDT:', this.portfolio.USDT, 'maxAmount:', maxAmount);
+  if (!validation.valid) console.log('[DEBUG][BTC] Validation prix échouée:', validation.reason);
+  if (maxAmount < minTradeUSD) console.log('[DEBUG][BTC] Montant trop faible pour trade:', maxAmount);
+  if (this.entryPrices[asset]) console.log('[DEBUG][BTC] Déjà une position ouverte sur BTC');
+  if (!this.canOpenNewPosition()) console.log('[DEBUG][BTC] Trop de positions ouvertes');
+}
     // Validation prix
     const validation = await this.validatePrice(symbol, price);
     if (!validation.valid) {
@@ -311,12 +317,12 @@ class IchimokuBot {
       const qty = this.portfolio[asset];
       const sellValue = qty * price * (1 - feeRate);
       const pnl = sellValue - (entry.qty * entry.price);
+      this.portfolio[asset] = 0;
+      delete this.entryPrices[asset];
       this.portfolio.USDT += sellValue;
       this.logTransaction(symbol, 'SELL', qty, price, pnl, entry.strategy);
       if (pnl > 0) this.metrics.winningTrades++;
       else this.metrics.losingTrades++;
-      this.portfolio[asset] = 0;
-      delete this.entryPrices[asset];
     }
     if (signal.short && !this.shorts[asset]) {
       const amount = maxAmount / price;
@@ -337,6 +343,7 @@ class IchimokuBot {
         this.logTransaction(symbol, 'SHORT', amount, price, null, strategy);
       }
     }
+    
   }
 
   async checkPartialTakeProfit(symbol, currentPrice) {
@@ -400,6 +407,10 @@ class IchimokuBot {
   logTransaction(symbol, type, amount, price, pnl = null, strategy = null) {
     const portfolioCopy = { ...this.portfolio };
     delete portfolioCopy.history;
+    // Correction ici : pour COVER-FORCE et COVER, la valeur = montant réellement récupéré (pnl)
+    const value = (type.startsWith('COVER') || type === 'COVER-FORCE')
+      ? (pnl !== null ? parseFloat(pnl.toFixed(2)) : parseFloat((amount * price).toFixed(2)))
+      : parseFloat((amount * price).toFixed(2));
     const logEntry = {
       id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       timestamp: new Date().toISOString(),
@@ -407,7 +418,7 @@ class IchimokuBot {
       type,
       amount: parseFloat(amount.toFixed(6)),
       price: parseFloat(price.toFixed(6)),
-      value: parseFloat((amount * price).toFixed(2)),
+      value,
       pnl: pnl ? parseFloat(pnl.toFixed(2)) : null,
       portfolio: portfolioCopy,
       totalValue: this.getTotalValue(),
@@ -419,7 +430,6 @@ class IchimokuBot {
       fs.appendFileSync('transactions.log', JSON.stringify(logEntry) + '\n');
     } catch (e) {}
   }
-
   async analyzeSymbol(symbol) {
     try {
       let ichimokuStatus = '-', bosStatus = '-';
@@ -513,11 +523,11 @@ class IchimokuBot {
             if (currentPrice <= this.entryPrices[asset].trailingStop) {
               const qty = this.portfolio[asset];
               const sellValue = qty * currentPrice * (1 - this.feeRate);
+              this.portfolio[asset] = 0;
+              delete this.entryPrices[asset];
               this.portfolio.USDT += sellValue;
               const pnl = sellValue - (qty * this.entryPrices[asset].price);
               this.logTransaction(symbol, 'TRAILING_STOP', qty, currentPrice, pnl, this.entryPrices[asset].strategy);
-              this.portfolio[asset] = 0;
-              delete this.entryPrices[asset];
             }
           }
           return null;
@@ -686,7 +696,6 @@ class IchimokuBot {
     this.isRunning = false;
   }
 }
-
 // EXPRESS SERVER
 const app = express();
 app.use(express.json());
@@ -838,7 +847,7 @@ app.get('/transactions/view', (req, res) => {
                     ${tx.pnl !== null ? `<span class="${tx.pnl >= 0 ? 'profit' : 'loss'}"> | PnL: ${tx.pnl.toFixed(2)} USDT</span>` : ''}
                 </div>
                 <div style="font-size: 12px; color: #888;">
-                    Valeur: ${(tx.amount * tx.price).toFixed(2)} USDT | 
+                    Valeur: ${tx.value !== undefined ? tx.value.toFixed(2) : '-'} USDT | 
                     Total Portfolio: ${tx.totalValue ? tx.totalValue.toFixed(2) : 'N/A'} USDT<br>
                     <span class="strategy">Stratégie: ${tx.strategy || 'Non spécifié'}</span>
                 </div>
@@ -856,6 +865,7 @@ app.get('/transactions/view', (req, res) => {
   }
 });
 
+// CORRECTION ICI : suppression de la position AVANT d'ajouter l'USDT et de loguer la transaction
 app.post('/api/close-position', (req, res) => {
   const symbol = req.body.symbol;
   if (!bot || !symbol) return res.status(400).json({ error: 'Bot ou symbole manquant' });
@@ -870,10 +880,10 @@ app.post('/api/close-position', (req, res) => {
     const qty = bot.portfolio[asset];
     const sellValue = qty * price * (1 - feeRate);
     const pnl = sellValue - (entry.qty * entry.price);
-    bot.portfolio.USDT += sellValue;
-    bot.logTransaction(symbol, 'FORCED-SELL', qty, price, pnl, entry.strategy);
     bot.portfolio[asset] = 0;
     delete bot.entryPrices[asset];
+    bot.portfolio.USDT += sellValue;
+    bot.logTransaction(symbol, 'FORCED-SELL', qty, price, pnl, entry.strategy);
     return res.redirect('/transactions/view');
   }
   // Si SHORT, couvrir immédiatement
@@ -882,17 +892,28 @@ app.post('/api/close-position', (req, res) => {
     const price = bot.lastReadings[symbol]?.value || short.price;
     const qtyToCover = short.qty;
     const coverValue = qtyToCover * (short.price - price) * (1 - feeRate);
+    bot.shorts[asset].qty = 0;
+    delete bot.shorts[asset];
     bot.portfolio.USDT += coverValue;
     bot.logTransaction(symbol, 'COVER-FORCE', qtyToCover, price, coverValue, short.strategy);
-    delete bot.shorts[asset];
     return res.redirect('/transactions/view');
   }
   return res.redirect('/transactions/view');
 });
+app.get('/api/status', (req, res) => {
+  if (!bot) return res.json({ isRunning: false });
+  res.json(bot.getStatus());
+});
 
-app.get('/api/status', (req, res) => { if (!bot) return res.json({ isRunning: false }); res.json(bot.getStatus()); });
-app.get('/api/positions', (req, res) => { if (!bot) return res.json([]); res.json(bot.getPositions()); });
-app.get('/api/transactions', (req, res) => { if (!bot) return res.json([]); res.json(bot.getTransactions()); });
+app.get('/api/positions', (req, res) => {
+  if (!bot) return res.json([]);
+  res.json(bot.getPositions());
+});
+
+app.get('/api/transactions', (req, res) => {
+  if (!bot) return res.json([]);
+  res.json(bot.getTransactions());
+});
 
 app.post('/api/start', async (req, res) => {
   try {
@@ -906,8 +927,12 @@ app.post('/api/start', async (req, res) => {
 });
 
 app.post('/api/stop', (req, res) => {
-  if (bot) { bot.stop(); res.json({ success: true, message: 'Bot arrêté' }); }
-  else res.json({ error: 'Aucun bot en cours' });
+  if (bot) {
+    bot.stop();
+    res.json({ success: true, message: 'Bot arrêté' });
+  } else {
+    res.json({ error: 'Aucun bot en cours' });
+  }
 });
 
 async function main() {
@@ -918,7 +943,9 @@ async function main() {
     console.log(`📊 Interface: http://localhost:${PORT}/transactions/view`);
   });
   process.on('SIGINT', () => { if (bot) bot.stop(); });
-  try { await bot.start(); } catch (e) {}
+  try {
+    await bot.start();
+  } catch (e) {}
 }
 
 if (require.main === module) {
