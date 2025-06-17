@@ -806,7 +806,12 @@ app.get('/transactions/view', (req, res) => {
             <h2>📊 Statut du Bot</h2>
             <p><strong>État:</strong> ${bot.getStatus().isRunning ? '🟢 Actif' : '🔴 Arrêté'}</p>
             <p><strong>Cycles:</strong> ${bot.getStatus().cycleCount}</p>
-            <p><strong>Capital:</strong> ${bot.getStatus().totalValue.toFixed(2)} USDT</p>
+            <p><strong>Capital (USDT):</strong> ${bot.getStatus().usdtBalance.toFixed(2)} USDT</p>
+<p><strong>Valeur positions ouvertes:</strong> ${(
+  bot.getStatus().totalValue - bot.getStatus().usdtBalance
+).toFixed(2)} USDT</p>
+<p><strong>Valeur totale:</strong> ${bot.getStatus().totalValue.toFixed(2)} USDT</p>
+
             <p><strong>Positions actives:</strong> ${bot.getStatus().activePositions}</p>
             <p><strong>Taux de réussite:</strong> ${bot.getStatus().metrics.winRate.toFixed(2)}%</p>
         </div>
