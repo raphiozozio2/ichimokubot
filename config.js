@@ -1,11 +1,8 @@
 module.exports = {
   exchange: 'binance',
     symbols: [
-    'BTC/USDT', 'ETH/USDT',
-    'LINK/USDT', 'NEAR/USDT', 'APT/USDT',
-    'RNDR/USDT', 'ARB/USDT', 'SUI/USDT',
-    'DOGE/USDT', 'SHIB/USDT', 'LDO/USDT',
-    'SOL/USDT',  'ACH/USDT',  'BEL/USDT'
+    'BTC/USDT', 'ETH/USDT', 'SUI/USDT',
+    'DOGE/USDT', 'SHIB/USDT',    'SOL/USDT',  'ACH/USDT',  'BEL/USDT'
   ],
   initialCapital: 1000,
   riskPercentage: 30,

@@ -327,17 +327,16 @@ if (symbol === 'BTC/USDT') {
     if (signal.short && !this.shorts[asset]) {
       const amount = maxAmount / price;
       if (amount > 0 && this.portfolio.USDT >= maxAmount) {
-        this.shorts[asset] = {
-          price,
-          atr: atrValue,
-          qty: amount,
-          stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
-          tp1: price - 1 * atrValue,
-          tp2: price - 2 * atrValue,
-          tp1Done: false,
-          entryTime: new Date(),
-          strategy
-        };
+this.shorts[asset] = {
+  price, atr: atrValue, qty: amount,
+  stopLoss: price + config.stopLoss.atrMultiplier * atrValue,
+  tp1: price - 1 * atrValue,
+  tp2: price - 2 * atrValue,
+  tp1Done: false,
+  entryTime: new Date(),
+  strategy,
+  collateral: maxAmount // <-- AJOUTE CETTE LIGNE
+};
         this.portfolio.USDT -= maxAmount;
         this.metrics.totalTrades++;
         this.logTransaction(symbol, 'SHORT', amount, price, null, strategy);
@@ -566,13 +565,20 @@ if (symbol === 'BTC/USDT') {
     }
   }
 
-  getTotalValue() {
-    let total = this.portfolio.USDT;
-    Object.keys(this.entryPrices).forEach(asset => {
-      total += this.portfolio[asset] * this.entryPrices[asset].price;
-    });
-    return total;
+getTotalValue() {
+  let total = this.portfolio.USDT;
+  for (const [asset, entry] of Object.entries(this.entryPrices)) {
+    const symbol = `${asset}/USDT`;
+    const currentPrice = this.lastReadings[symbol]?.value || entry.price;
+    total += this.portfolio[asset] * currentPrice;
   }
+for (const [asset, short] of Object.entries(this.shorts)) {
+  const symbol = `${asset}/USDT`;
+  const currentPrice = this.lastReadings[symbol]?.value || short.price;
+  total += short.collateral + (short.price - currentPrice) * short.qty;
+}
+  return total;
+}
 
   getStatus() {
     return {
@@ -896,15 +902,17 @@ app.post('/api/close-position', (req, res) => {
     const short = bot.shorts[asset];
     const price = bot.lastReadings[symbol]?.value || short.price;
     const qtyToCover = short.qty;
-    const coverValue = qtyToCover * (short.price - price) * (1 - feeRate);
-    bot.shorts[asset].qty = 0;
-    delete bot.shorts[asset];
-    bot.portfolio.USDT += coverValue;
-    bot.logTransaction(symbol, 'COVER-FORCE', qtyToCover, price, coverValue, short.strategy);
+const coverValue = qtyToCover * (short.price - price) * (1 - feeRate);
+const collateral = short.collateral ?? (qtyToCover * short.price); // sécurité si tu n'as pas encore la clé collateral
+bot.shorts[asset].qty = 0;
+delete bot.shorts[asset];
+bot.portfolio.USDT += collateral + coverValue;
+bot.logTransaction(symbol, 'COVER-FORCE', qtyToCover, price, collateral + coverValue, short.strategy);
     return res.redirect('/transactions/view');
   }
   return res.redirect('/transactions/view');
 });
+
 app.get('/api/status', (req, res) => {
   if (!bot) return res.json({ isRunning: false });
   res.json(bot.getStatus());
